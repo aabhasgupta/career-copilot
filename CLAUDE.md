@@ -21,7 +21,7 @@ Python 3.12 + uv, SQLAlchemy/SQLite, Typer CLI, Claude API (claude-sonnet-5) for
 
 - Full phased roadmap: docs/PLAN.md (check off phases as completed)
 - Decision log: docs/DECISIONS.md
-- Current: pre-Phase-0. A cloud Ultraplan session is executing the initial scaffold; its PR must be reconciled against docs/PLAN.md (the cloud session worked from an older plan version that had Gmail instead of Outlook and lacked the salary fields, browser prefill, and `copilot schedule` group).
+- Current: Phase 0 code complete (scaffold, config, DB models, resume extraction via structured outputs, `copilot init` / `copilot profile show`). End-to-end verification with the user's real resume and API key is the remaining Phase 0 step. Next: Phase 1 discovery. (The cloud Ultraplan session was abandoned; ignore any artifacts from it.)
 
 ## Conventions
 

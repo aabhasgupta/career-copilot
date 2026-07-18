@@ -1,0 +1,40 @@
+# Career Copilot user profile.
+# Copy to profile.yaml (gitignored) and fill in your details.
+# Everything personal lives here and in data/ - never hardcoded in the app.
+
+identity:
+  full_name: Jane Doe
+  email: jane@example.com
+  phone: "+1 555 000 0000"
+  location: San Francisco, CA
+  links:
+    linkedin: https://linkedin.com/in/janedoe
+    github: https://github.com/janedoe
+    portfolio: null
+
+resume_path: data/resume.pdf
+
+search:
+  # Titles the discovery agent queries for. Be specific but not narrow.
+  titles:
+    - Software Engineer
+    - Backend Engineer
+  locations:
+    - United States
+  remote: any          # remote | hybrid | onsite | any
+  min_salary: null     # e.g. 120000; null = no floor
+  salary_currency: USD
+  # Hard filters: jobs matching any of these are dropped, not just downranked.
+  dealbreakers: []     # e.g. ["staffing agency", "clearance required"]
+
+visa:
+  needs_sponsorship: true
+  # none | f1_opt | stem_opt | h1b_transfer | other
+  status: h1b_transfer
+
+email_integration:
+  provider: outlook    # outlook | gmail
+  address: jane@hotmail.com
+
+llm:
+  model: claude-sonnet-5

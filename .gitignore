@@ -1,6 +1,7 @@
 # Personal data: resume, database, email tokens, API keys
 data/
 .env
+profile.yaml
 
 # Python
 __pycache__/
