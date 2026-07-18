@@ -1,0 +1,14 @@
+# Personal data: resume, database, email tokens, API keys
+data/
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+dist/
+*.egg-info/
+
+# Tooling
+.pytest_cache/
+.ruff_cache/
