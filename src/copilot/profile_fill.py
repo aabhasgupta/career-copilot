@@ -50,3 +50,19 @@ def fill_identity(profile_yaml_path: Path, resume: ResumeProfile) -> list[str]:
         yaml.dump(data, f)
 
     return changed
+
+
+def set_search_titles(profile_yaml_path: Path, titles: list[str]) -> None:
+    """Replace search.titles in profile.yaml, preserving comments/layout.
+
+    Unlike fill_identity, this always overwrites - it's only called after the
+    CLI has explicitly confirmed the user wants to apply suggested titles.
+    """
+    with open(profile_yaml_path) as f:
+        data = yaml.load(f)
+
+    search = data.setdefault("search", {})
+    search["titles"] = titles
+
+    with open(profile_yaml_path, "w") as f:
+        yaml.dump(data, f)

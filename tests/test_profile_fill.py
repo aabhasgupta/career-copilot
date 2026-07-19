@@ -2,7 +2,7 @@ from pathlib import Path
 
 from ruamel.yaml import YAML
 
-from copilot.profile_fill import fill_identity
+from copilot.profile_fill import fill_identity, set_search_titles
 from copilot.resume import ContactInfo, ResumeProfile
 
 EXAMPLE_PROFILE = """\
@@ -96,3 +96,15 @@ def test_no_change_when_resume_states_nothing_new(tmp_path: Path):
     )
     changed = fill_identity(path, resume)
     assert changed == []
+
+
+def test_set_search_titles_replaces_list_and_preserves_comments(tmp_path: Path):
+    path = write_profile(tmp_path)
+    set_search_titles(path, ["Platform Engineer", "Backend Engineer"])
+
+    yaml = YAML()
+    result = yaml.load(path.read_text())
+    assert result["search"]["titles"] == ["Platform Engineer", "Backend Engineer"]
+    assert "# a helpful comment that must survive" in path.read_text()
+    # unrelated section untouched
+    assert result["identity"]["full_name"] == "Jane Doe"

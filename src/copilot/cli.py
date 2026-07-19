@@ -42,9 +42,10 @@ def init() -> None:
         "\nNext steps:\n"
         "  1. Put your resume at data/resume.pdf\n"
         "  2. Set ANTHROPIC_API_KEY (e.g. in a .env file)\n"
-        "  3. Run: copilot profile fill   (auto-fills identity from your resume)\n"
-        f"  4. Edit {PROFILE_FILENAME}: fill in search, visa, and email_integration by hand\n"
-        "  5. Run: copilot profile show"
+        "  3. Run: copilot profile fill            (auto-fills identity from your resume)\n"
+        "  4. Run: copilot profile suggest-titles  (optional: propose search.titles)\n"
+        f"  5. Edit {PROFILE_FILENAME}: fill in search, visa, and email_integration by hand\n"
+        "  6. Run: copilot profile show"
     )
 
 
@@ -77,6 +78,63 @@ def profile_fill_cmd() -> None:
         "[dim]search, visa, and email_integration are your preferences, not resume "
         f"facts - edit those by hand in {PROFILE_FILENAME}.[/]"
     )
+
+
+@profile_app.command("suggest-titles")
+def profile_suggest_titles_cmd(
+    apply_: bool | None = typer.Option(
+        None,
+        "--apply/--no-apply",
+        help="Skip the confirmation prompt: apply automatically, or just show and exit.",
+    ),
+) -> None:
+    """Suggest target job titles from your resume plus a live search for what's
+    currently in demand. Always shown first - profile.yaml is only touched if
+    you say yes (or pass --apply)."""
+    profile_path = Path(PROFILE_FILENAME)
+    if not profile_path.exists():
+        console.print(f"[red]{PROFILE_FILENAME} not found.[/] Run 'copilot init' first.")
+        raise typer.Exit(1)
+
+    profile = load_profile()
+
+    from copilot.resume import extract_resume_profile
+    from copilot.title_suggestions import suggest_target_titles
+
+    with console.status("Reading resume and searching the current job market..."):
+        resume = extract_resume_profile(profile)
+        suggestions = suggest_target_titles(profile, resume)
+
+    table = Table(title="Suggested target titles")
+    table.add_column("#", width=3)
+    table.add_column("Title", style="bold")
+    table.add_column("Why it fits + demand")
+    for i, s in enumerate(suggestions, 1):
+        why = s.reasoning + (f" [dim]({s.demand_signal})[/]" if s.demand_signal else "")
+        table.add_row(str(i), s.title, why)
+    console.print(table)
+
+    console.print(
+        f"[dim]Current search.titles in {PROFILE_FILENAME}: "
+        f"{', '.join(profile.search.titles)}[/]"
+    )
+
+    should_apply = apply_
+    if should_apply is None:
+        should_apply = typer.confirm(
+            f"Replace search.titles in {PROFILE_FILENAME} with these "
+            f"{len(suggestions)} titles?",
+            default=False,
+        )
+
+    if not should_apply:
+        console.print(f"[yellow]Not applied.[/] {PROFILE_FILENAME} unchanged.")
+        return
+
+    from copilot.profile_fill import set_search_titles
+
+    set_search_titles(profile_path, [s.title for s in suggestions])
+    console.print(f"[green]Updated search.titles[/] in {PROFILE_FILENAME}.")
 
 
 @profile_app.command("show")
