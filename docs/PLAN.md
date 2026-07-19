@@ -56,7 +56,7 @@ career-copilot/
 ## Phases
 
 ### [x] Phase 0 - Foundation (code complete; end-to-end verify pending user's real resume + API key)
-Project scaffolding, `profile.yaml` schema + loader, DB models, resume ingestion: parse PDF, Claude extracts a structured profile (skills, experience, seniority) cached as JSON for downstream prompts. CLI: `copilot init`, `copilot profile show`.
+Project scaffolding, `profile.yaml` schema + loader, DB models, resume ingestion: parse PDF, Claude extracts a structured profile (skills, experience, seniority, contact info) cached as JSON for downstream prompts. `copilot profile fill` auto-populates the `identity` block of `profile.yaml` from the extracted resume (comment-preserving merge via ruamel.yaml) - `search`/`visa`/`email_integration` stay manual since they're preferences, not resume facts. CLI: `copilot init`, `copilot profile fill`, `copilot profile show`.
 **Verify**: `copilot profile show` prints an accurate structured summary of the real resume.
 
 ### [ ] Phase 1 - Discovery

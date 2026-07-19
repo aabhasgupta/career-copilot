@@ -1,6 +1,11 @@
 # Career Copilot user profile.
 # Copy to profile.yaml (gitignored) and fill in your details.
 # Everything personal lives here and in data/ - never hardcoded in the app.
+#
+# identity below can be auto-filled from your resume: after copying this
+# file and placing your resume at data/resume.pdf, run `copilot profile fill`.
+# search/visa/email_integration are your preferences, not resume facts -
+# those always need your own edit.
 
 identity:
   full_name: Jane Doe

@@ -40,10 +40,42 @@ def init() -> None:
     console.print("[green]Database ready[/] at data/copilot.db")
     console.print(
         "\nNext steps:\n"
-        f"  1. Edit {PROFILE_FILENAME}\n"
-        "  2. Put your resume at data/resume.pdf\n"
-        "  3. Set ANTHROPIC_API_KEY (e.g. in a .env file)\n"
-        "  4. Run: copilot profile show"
+        "  1. Put your resume at data/resume.pdf\n"
+        "  2. Set ANTHROPIC_API_KEY (e.g. in a .env file)\n"
+        "  3. Run: copilot profile fill   (auto-fills identity from your resume)\n"
+        f"  4. Edit {PROFILE_FILENAME}: fill in search, visa, and email_integration by hand\n"
+        "  5. Run: copilot profile show"
+    )
+
+
+@profile_app.command("fill")
+def profile_fill_cmd() -> None:
+    """Auto-fill identity (name, contact, links) in profile.yaml from your resume.
+
+    search/visa/email_integration are your own preferences and are left alone -
+    edit those by hand.
+    """
+    profile_path = Path(PROFILE_FILENAME)
+    if not profile_path.exists():
+        console.print(f"[red]{PROFILE_FILENAME} not found.[/] Run 'copilot init' first.")
+        raise typer.Exit(1)
+
+    profile = load_profile()
+
+    from copilot.profile_fill import fill_identity
+    from copilot.resume import extract_resume_profile
+
+    with console.status("Reading resume..."):
+        resume = extract_resume_profile(profile)
+        changed = fill_identity(profile_path, resume)
+
+    if changed:
+        console.print(f"[green]Filled from resume:[/] {', '.join(changed)}")
+    else:
+        console.print("[yellow]Nothing new to fill[/] - identity already matches the resume.")
+    console.print(
+        "[dim]search, visa, and email_integration are your preferences, not resume "
+        f"facts - edit those by hand in {PROFILE_FILENAME}.[/]"
     )
 
 

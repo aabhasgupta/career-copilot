@@ -38,8 +38,21 @@ class Education(BaseModel):
     graduation_year: str | None = None
 
 
+class ContactInfo(BaseModel):
+    """Header/contact details, when the resume states them. Feeds profile.yaml's
+    identity section via 'copilot profile fill' - never invented, only extracted."""
+
+    email: str | None = None
+    phone: str | None = None
+    location: str | None = None
+    linkedin_url: str | None = None
+    github_url: str | None = None
+    portfolio_url: str | None = None
+
+
 class ResumeProfile(BaseModel):
     full_name: str
+    contact: ContactInfo = Field(default_factory=ContactInfo)
     summary: str = Field(description="2-3 sentence professional summary")
     seniority: str = Field(description="e.g. junior, mid, senior, staff, principal")
     years_of_experience: float
@@ -56,6 +69,8 @@ EXTRACTION_PROMPT = """Extract a structured profile from this resume.
 
 Guidelines:
 - Be faithful to what the resume says; do not invent or embellish.
+- contact: pull directly from the header (email, phone, city/state, LinkedIn/GitHub/
+  portfolio URLs). Leave a field null if the resume doesn't state it - never guess.
 - years_of_experience: total professional (non-internship) experience; estimate
   from employment dates if not stated.
 - seniority: judge from titles, scope, and years, not just the latest title.

@@ -22,8 +22,10 @@ Requires [uv](https://docs.astral.sh/uv/) and an [Anthropic API key](https://con
 ```sh
 uv sync
 uv run copilot init          # creates profile.yaml, data/, and the database
-# edit profile.yaml, drop your resume at data/resume.pdf,
-# put ANTHROPIC_API_KEY=sk-... in .env
+# drop your resume at data/resume.pdf, put ANTHROPIC_API_KEY=sk-... in .env
+uv run copilot profile fill  # auto-fills identity (name/contact/links) from your resume
+# edit profile.yaml: fill in search, visa, and email_integration by hand - these
+# are your preferences, not facts the resume states
 uv run copilot profile show  # Claude extracts and displays your structured profile
 ```
 
