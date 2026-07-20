@@ -58,11 +58,21 @@ def set_search_titles(profile_yaml_path: Path, titles: list[str]) -> None:
     Unlike fill_identity, this always overwrites - it's only called after the
     CLI has explicitly confirmed the user wants to apply suggested titles.
     """
+    update_search_preferences(profile_yaml_path, {"titles": titles})
+
+
+def update_search_preferences(profile_yaml_path: Path, updates: dict) -> None:
+    """Set fields in profile.yaml's search block, preserving comments/layout.
+
+    Callers validate first (e.g. via Profile.model_validate on the merged
+    result) - this function just writes.
+    """
     with open(profile_yaml_path) as f:
         data = yaml.load(f)
 
     search = data.setdefault("search", {})
-    search["titles"] = titles
+    for key, value in updates.items():
+        search[key] = value
 
     with open(profile_yaml_path, "w") as f:
         yaml.dump(data, f)

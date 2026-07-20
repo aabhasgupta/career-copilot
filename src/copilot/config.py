@@ -64,6 +64,10 @@ class SearchPreferences(BaseModel):
     # Entries: "remote", "within <N> miles of <place>", or plain text matched
     # against the job's location (e.g. "Chicago, IL").
     location_preference: list[str] = Field(default_factory=list)
+    # Ordered industries, most preferred first, from the controlled vocabulary
+    # in industry.py (banking, fintech, tech, consulting, ...). Reorders
+    # listings, never drops them.
+    industry_preference: list[str] = Field(default_factory=list)
 
 
 class VisaPreferences(BaseModel):

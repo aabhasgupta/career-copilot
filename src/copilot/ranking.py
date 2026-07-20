@@ -102,3 +102,17 @@ def preference_tier(job: Job, rules: list[_Rule]) -> int:
 
 def tier_label(tier: int, rules: list[_Rule]) -> str:
     return rules[tier].label if tier < len(rules) else "-"
+
+
+def industry_tier(job: Job, industry_preference: list[str]) -> int:
+    """Index of the job's company industry in the preference list;
+    len(list) if the industry is unknown or unpreferred."""
+    industry = (job.company.industry or "").lower() if job.company else ""
+    for i, entry in enumerate(industry_preference):
+        if entry.strip().lower() == industry:
+            return i
+    return len(industry_preference)
+
+
+def industry_label(tier: int, industry_preference: list[str]) -> str:
+    return industry_preference[tier] if tier < len(industry_preference) else "-"

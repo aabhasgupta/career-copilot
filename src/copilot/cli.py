@@ -244,12 +244,24 @@ def discover() -> None:
         with console.status("Checking companies for public ATS job boards..."):
             ats = resolve_and_poll_ats(profile, session)
 
-        from copilot.discovery.pipeline import geocode_missing_coordinates
+        from copilot.discovery.pipeline import (
+            classify_new_companies,
+            geocode_missing_coordinates,
+        )
 
         with console.status("Geocoding job locations (cached after first run)..."):
             geocoded = geocode_missing_coordinates(session)
         if geocoded:
             console.print(f"[dim]Geocoded {geocoded} job locations.[/]")
+
+        with console.status("Classifying new companies by industry (one batched call)..."):
+            try:
+                classified = classify_new_companies(profile, session)
+            except Exception as exc:  # noqa: BLE001 - classification is enrichment, not critical path
+                classified = 0
+                console.print(f"[red]Industry classification failed:[/] {exc}")
+        if classified:
+            console.print(f"[dim]Classified {classified} new companies by industry.[/]")
 
     if ats.companies_probed or ats.boards_polled:
         console.print(
@@ -262,6 +274,25 @@ def discover() -> None:
         console.print(f"[red]ATS error:[/] {err}")
 
     console.print("[dim]Run 'copilot jobs list' to see them.[/]")
+
+
+@app.command()
+def dashboard(
+    port: int = typer.Option(8765, "--port", help="Port to serve on."),
+) -> None:
+    """Open the local web dashboard (currently: search preferences editor).
+    Localhost only - nothing is exposed to the network."""
+    profile_path = Path(PROFILE_FILENAME)
+    if not profile_path.exists():
+        console.print(f"[red]{PROFILE_FILENAME} not found.[/] Run 'copilot init' first.")
+        raise typer.Exit(1)
+
+    import uvicorn
+
+    from copilot.dashboard import create_app
+
+    console.print(f"[green]Dashboard:[/] http://127.0.0.1:{port}  (Ctrl+C to stop)")
+    uvicorn.run(create_app(profile_path), host="127.0.0.1", port=port, log_level="warning")
 
 
 @jobs_app.command("prune")
@@ -313,11 +344,18 @@ def jobs_list(
     from copilot.db import get_engine, get_session
     from copilot.db.models import Job
     from copilot.geocode import Geocoder
-    from copilot.ranking import build_rules, preference_tier, tier_label
+    from copilot.ranking import (
+        build_rules,
+        industry_label,
+        industry_tier,
+        preference_tier,
+        tier_label,
+    )
 
     profile = load_profile()
     floor = None if show_all else (min_salary if min_salary is not None else profile.search.min_salary)
     rules = build_rules(profile.search.location_preference, Geocoder())
+    industries = profile.search.industry_preference
 
     engine = get_engine()
     with get_session(engine) as session:
@@ -334,9 +372,12 @@ def jobs_list(
             console.print("[yellow]No jobs found.[/] Run 'copilot discover' first.")
             return
 
+        # Equal-weight blend of the two preference dimensions; ties broken by
+        # location tier, then salary, then recency.
         ranked = sorted(
             jobs,
             key=lambda j: (
+                preference_tier(j, rules) + industry_tier(j, industries),
                 preference_tier(j, rules),
                 -(j.salary_max or j.salary_min or 0),
                 -(j.created_at.timestamp() if j.created_at else 0),
@@ -347,6 +388,8 @@ def jobs_list(
         table.add_column("ID", width=4)
         if rules:
             table.add_column("Pref")
+        if industries:
+            table.add_column("Industry")
         table.add_column("Title")
         table.add_column("Company")
         table.add_column("Location")
@@ -363,6 +406,8 @@ def jobs_list(
             row = [str(job.id)]
             if rules:
                 row.append(tier_label(preference_tier(job, rules), rules))
+            if industries:
+                row.append(industry_label(industry_tier(job, industries), industries))
             row += [job.title, company_name, job.location or "unknown", salary, job.source]
             table.add_row(*row)
         console.print(table)

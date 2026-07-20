@@ -73,3 +73,19 @@ def test_clean_location_strips_noise_and_rejects_non_places():
     assert _clean_location("Columbus, OH (+2 others)") == "Columbus, OH"
     assert _clean_location("Anywhere") is None
     assert _clean_location("Remote") is None
+
+
+def test_industry_tier_matches_company_label(tmp_path: Path):
+    from copilot.db.models import Company
+    from copilot.ranking import industry_label, industry_tier
+
+    prefs = ["banking", "fintech", "tech"]
+    fintech_job = _job()
+    fintech_job.company = Company(name="Chime", industry="fintech")
+    unknown_job = _job()
+    unknown_job.company = Company(name="Mystery Co", industry=None)
+
+    assert industry_tier(fintech_job, prefs) == 1
+    assert industry_tier(unknown_job, prefs) == 3
+    assert industry_label(1, prefs) == "fintech"
+    assert industry_label(3, prefs) == "-"

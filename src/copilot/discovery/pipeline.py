@@ -161,6 +161,34 @@ def run_discovery(
     return summary
 
 
+def classify_new_companies(profile: Profile, session: Session) -> int:
+    """Classify the industry of companies that don't have one yet - a single
+    batched LLM call per run, and none at all when there's nothing new.
+    Returns the number of companies classified."""
+    from copilot.industry import classify_companies
+
+    unclassified = session.scalars(
+        select(Company).where(Company.industry.is_(None))
+    ).all()
+    if not unclassified:
+        return 0
+
+    with_context = []
+    for company in unclassified:
+        sample = session.scalar(select(Job.title).where(Job.company_id == company.id))
+        with_context.append((company.name, sample))
+
+    labels = classify_companies(profile, with_context)
+    classified = 0
+    for company in unclassified:
+        label = labels.get(company.name)
+        if label:
+            company.industry = label
+            classified += 1
+    session.commit()
+    return classified
+
+
 @dataclass
 class PruneSummary:
     dealbreakers: int = 0

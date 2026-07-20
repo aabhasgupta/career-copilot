@@ -83,6 +83,8 @@ class Company(Base):
     sponsorship_status: Mapped[SponsorshipStatus] = mapped_column(
         Enum(SponsorshipStatus), default=SponsorshipStatus.unknown
     )
+    # Classified once by the LLM from a controlled vocabulary; see industry.py
+    industry: Mapped[str | None] = mapped_column(String(32))
     h1b_filing_count: Mapped[int | None] = mapped_column(Integer)
     sponsorship_evidence: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
