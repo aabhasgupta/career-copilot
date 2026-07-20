@@ -192,10 +192,18 @@ def profile_show(
 
 
 @app.command()
-def discover() -> None:
-    """Search Adzuna + JSearch for every title/location in your profile and
-    save new postings to the database. Safe to re-run - duplicates are
-    skipped, not re-added."""
+def discover(
+    since: str = typer.Option(
+        "week",
+        "--since",
+        help="JSearch posting-age window: today | 3days | week | month | all. "
+        "Use 'month' or 'all' for a one-time backfill; 'week' (default) for "
+        "regular runs.",
+    ),
+) -> None:
+    """Search all sources for every title/location in your profile and save
+    new postings to the database. Safe to re-run - duplicates are skipped,
+    not re-added."""
     profile_path = Path(PROFILE_FILENAME)
     if not profile_path.exists():
         console.print(f"[red]{PROFILE_FILENAME} not found.[/] Run 'copilot init' first.")
@@ -230,6 +238,7 @@ def discover() -> None:
                 adzuna_app_id=adzuna_app_id,
                 adzuna_app_key=adzuna_app_key,
                 jsearch_api_key=jsearch_api_key,
+                jsearch_date_posted=since,
             )
 
         console.print(

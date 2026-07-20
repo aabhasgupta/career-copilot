@@ -131,6 +131,7 @@ def run_discovery(
     adzuna_app_id: str | None,
     adzuna_app_key: str | None,
     jsearch_api_key: str | None,
+    jsearch_date_posted: str = "week",
 ) -> DiscoverySummary:
     from copilot.rules import load_dealbreaker_rules
 
@@ -165,7 +166,11 @@ def run_discovery(
 
             if jsearch_api_key:
                 try:
-                    ingest(search_jsearch(title, location, jsearch_api_key))
+                    ingest(
+                        search_jsearch(
+                            title, location, jsearch_api_key, date_posted=jsearch_date_posted
+                        )
+                    )
                 except Exception as exc:  # noqa: BLE001
                     summary.errors.append(f"jsearch[{title} / {location}]: {exc}")
 
@@ -332,10 +337,15 @@ def _poll_board(
         if changed:
             summary.links_upgraded += 1
 
+    from copilot.discovery.locations import is_non_us
+
     for posting in postings:
         if id(posting) in matched:
             continue
         if not _matches_search_titles(posting.title, profile.search.titles):
+            continue
+        # Boards are global; the aggregator sources are already US-scoped
+        if is_non_us(posting.location):
             continue
         discovered = DiscoveredJob(
             title=posting.title,

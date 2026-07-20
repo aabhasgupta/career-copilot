@@ -276,3 +276,21 @@ def test_normalize_remoteok_zero_salary_is_unknown():
     assert job.salary_min is None and job.salary_max is None
     assert job.salary_source == SalarySource.unknown
     assert job.source == "remoteok"
+
+
+def test_is_non_us_blocks_countries_keeps_us():
+    from copilot.discovery.locations import is_non_us
+
+    assert is_non_us("Remote Canada")
+    assert is_non_us("London, United Kingdom")
+    assert is_non_us("IL-Israel-Remote")
+    assert is_non_us("Bengaluru, Karnataka, India")
+    assert is_non_us("Remote - EMEA")
+    assert not is_non_us("Americas, Europe, Israel")  # Americas = US-eligible
+
+    assert not is_non_us("Chicago, IL")
+    assert not is_non_us("Peru, IL")  # Illinois town, not the country
+    assert not is_non_us("Albuquerque, New Mexico")
+    assert not is_non_us("Remote US")
+    assert not is_non_us("Anywhere")
+    assert not is_non_us(None)
