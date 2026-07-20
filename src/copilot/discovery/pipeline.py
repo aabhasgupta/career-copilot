@@ -134,39 +134,51 @@ def run_discovery(
 ) -> DiscoverySummary:
     from copilot.rules import load_dealbreaker_rules
 
+    from copilot.discovery.remote_boards import fetch_remoteok, search_remotive
+
     summary = DiscoverySummary()
     rules, rule_errors = load_dealbreaker_rules(profile)
     summary.errors.extend(rule_errors)
 
+    def ingest(discovered_jobs: list[DiscoveredJob]) -> None:
+        for discovered in discovered_jobs:
+            summary.found += 1
+            if _hits_dealbreaker(discovered, rules) or _below_salary_floor(
+                discovered.salary_min, discovered.salary_max, profile.search.min_salary
+            ):
+                summary.dealbreakers_dropped += 1
+                continue
+
+            company = _get_or_create_company(session, discovered)
+            if _upsert_job(session, discovered, company):
+                summary.added += 1
+            else:
+                summary.duplicates += 1
+
     for title in profile.search.titles:
         for location in profile.search.locations:
-            discovered_jobs: list[DiscoveredJob] = []
-
             if adzuna_app_id and adzuna_app_key:
                 try:
-                    discovered_jobs += search_adzuna(title, location, adzuna_app_id, adzuna_app_key)
+                    ingest(search_adzuna(title, location, adzuna_app_id, adzuna_app_key))
                 except Exception as exc:  # noqa: BLE001 - one source failing shouldn't kill the run
                     summary.errors.append(f"adzuna[{title} / {location}]: {exc}")
 
             if jsearch_api_key:
                 try:
-                    discovered_jobs += search_jsearch(title, location, jsearch_api_key)
+                    ingest(search_jsearch(title, location, jsearch_api_key))
                 except Exception as exc:  # noqa: BLE001
                     summary.errors.append(f"jsearch[{title} / {location}]: {exc}")
 
-            for discovered in discovered_jobs:
-                summary.found += 1
-                if _hits_dealbreaker(discovered, rules) or _below_salary_floor(
-                    discovered.salary_min, discovered.salary_max, profile.search.min_salary
-                ):
-                    summary.dealbreakers_dropped += 1
-                    continue
-
-                company = _get_or_create_company(session, discovered)
-                if _upsert_job(session, discovered, company):
-                    summary.added += 1
-                else:
-                    summary.duplicates += 1
+    # Remote-first boards: free, keyless, not location-scoped - they run
+    # against titles only.
+    try:
+        ingest(search_remotive(profile.search.titles))
+    except Exception as exc:  # noqa: BLE001
+        summary.errors.append(f"remotive: {exc}")
+    try:
+        ingest(fetch_remoteok(profile.search.titles))
+    except Exception as exc:  # noqa: BLE001
+        summary.errors.append(f"remoteok: {exc}")
 
     session.commit()
     return summary
@@ -258,22 +270,14 @@ def geocode_missing_coordinates(session: Session) -> int:
     return updated
 
 
-def _normalize_title(title: str) -> str:
-    return re.sub(r"[^a-z0-9 ]", " ", title.lower()).strip()
-
-
-def _titles_equal(a: str, b: str) -> bool:
-    na, nb = _normalize_title(a), _normalize_title(b)
-    return bool(na) and na == nb
-
-
-def _titles_match(a: str, b: str) -> bool:
-    na, nb = _normalize_title(a), _normalize_title(b)
-    return bool(na and nb) and (na == nb or na in nb or nb in na)
-
-
-def _matches_search_titles(posting_title: str, search_titles: list[str]) -> bool:
-    return any(_titles_match(posting_title, t) for t in search_titles)
+# Re-exported here because tests and older call sites import them from the
+# pipeline; implementations live in matching.py so leaf modules can share them.
+from copilot.discovery.matching import (  # noqa: E402
+    matches_search_titles as _matches_search_titles,
+    normalize_title as _normalize_title,
+    titles_equal as _titles_equal,
+    titles_match as _titles_match,
+)
 
 
 def _pick_posting_for_job(

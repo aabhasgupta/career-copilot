@@ -34,10 +34,11 @@ uv run copilot profile show  # Claude extracts and displays your structured prof
 ## Discovering jobs
 
 ```sh
-uv run copilot discover      # searches Adzuna + JSearch for every title/location in your
-                             # profile, then probes each company for a public Greenhouse/
-                             # Lever/Ashby board - matched jobs get direct employer apply
-                             # links and full JD text instead of aggregator redirects
+uv run copilot discover      # searches Adzuna + JSearch (which indexes LinkedIn, Indeed,
+                             # Glassdoor via Google for Jobs) plus the free remote boards
+                             # Remotive and RemoteOK, then probes each company for a public
+                             # Greenhouse/Lever/Ashby board - matched jobs get direct
+                             # employer apply links and full JD text
 uv run copilot jobs list                     # best first (see below)
 uv run copilot jobs list --location chicago  # plus ad-hoc filters
 uv run copilot jobs list --all               # ignore the salary floor

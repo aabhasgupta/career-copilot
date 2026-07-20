@@ -220,3 +220,59 @@ def test_prune_jobs_deletes_violators_keeps_applied(tmp_path, monkeypatch):
         assert summary.dealbreakers == 1
         remaining = {j.dedupe_hash for j in session.query(Job).all()}
         assert remaining == {"a", "b", "e"}
+
+
+def test_normalize_remotive_salary_and_eligibility():
+    from copilot.discovery.remote_boards import (
+        _normalize_remotive,
+        _parse_salary_text,
+        _us_eligible,
+    )
+
+    assert _parse_salary_text("$120k-$150k") == (120000, 150000)
+    assert _parse_salary_text("$36k") == (36000, 36000)
+    assert _parse_salary_text("Competitive + 401k") == (None, None)
+    assert _parse_salary_text(None) == (None, None)
+
+    assert _us_eligible("USA Only")
+    assert _us_eligible("Worldwide")
+    assert _us_eligible(None)
+    assert not _us_eligible("Europe")
+    assert not _us_eligible("Philippines")
+
+    job = _normalize_remotive(
+        {
+            "title": "ML Engineer",
+            "company_name": "Acme",
+            "candidate_required_location": "USA",
+            "salary": "$140k-$180k",
+            "url": "https://remotive.com/j/1",
+            "publication_date": "2026-07-16T13:28:02",
+            "description": "<p>Build ML systems.</p>",
+        }
+    )
+    assert job.remote is True
+    assert job.salary_min == 140000 and job.salary_max == 180000
+    assert job.jd_text == "Build ML systems."
+    assert job.source == "remotive"
+
+
+def test_normalize_remoteok_zero_salary_is_unknown():
+    from copilot.db.models import SalarySource
+    from copilot.discovery.remote_boards import _normalize_remoteok
+
+    job = _normalize_remoteok(
+        {
+            "position": "LLM Engineer",
+            "company": "Acme",
+            "location": "Worldwide",
+            "salary_min": 0,
+            "salary_max": 0,
+            "epoch": 1784246400,
+            "url": "https://remoteok.com/j/1",
+            "description": "<b>Great role</b>",
+        }
+    )
+    assert job.salary_min is None and job.salary_max is None
+    assert job.salary_source == SalarySource.unknown
+    assert job.source == "remoteok"

@@ -20,6 +20,7 @@ Every third-party service this project talks to, what it's for, how it's authent
   - `GET /job-details` - single-job enrichment (`job_id`, `country`). Returns much richer fields than search results: `visa_sponsorship`, `seniority_level`, `work_arrangement`, structured salary, `required_technologies`/`preferred_technologies`.
 - **Known limitation:** the enrichment fields above are `null` on `/search-v2` results - they only populate via a separate `/job-details` call per job. Given the tight quota (below), Phase 1 discovery uses `/search-v2` only and does not auto-enrich every discovered job via `/job-details`.
 - **Rate limit (confirmed live, 2026-07-19):** 200 requests/month on the free Basic plan. Response headers `x-ratelimit-requests-limit` / `x-ratelimit-requests-remaining` / `x-ratelimit-requests-reset` report current usage on every real call - the plan is to capture these opportunistically from calls already being made for real work, not spend quota on dedicated status checks.
+- **Quota math for scheduling (Phase 4):** one discover run costs one JSearch call per search title (currently 8), so 200/month supports ~25 full runs - daily scheduling slightly exceeds it. Options when that becomes real: `date_posted=today` on scheduled runs, rotating titles across days, or letting JSearch skip runs when exhausted (the other sources still run; per-source error isolation already handles this).
 - **Endpoint naming caveat:** the search endpoint was `/search` in older documentation/tutorials and returns 404 there now - the current path is `/search-v2`. Verified via the RapidAPI dashboard's live "Test Endpoint" feature, not docs, since this had drifted.
 
 ### Adzuna
@@ -38,6 +39,19 @@ Every third-party service this project talks to, what it's for, how it's authent
   - Lever: `GET api.lever.co/v0/postings/{slug}?mode=json` (postings with `text` = title, `hostedUrl`, `categories.location`, `createdAt` in epoch ms, `descriptionPlain`).
   - Ashby: `GET api.ashbyhq.com/posting-api/job-board/{slug}` (postings with `title`, `jobUrl`, `location`, `isRemote`, `isListed`, `publishedAt`, `descriptionPlain`).
 - **Slug-collision caveat:** only Greenhouse returns the company name, so only Greenhouse hits can be verified. Loose slug guesses (first word of a multi-word company name) are therefore Greenhouse-only; Lever/Ashby accept full-name slugs only. This is load-bearing: loose Lever probing matched Capital One to an unrelated board named "capital" in live testing.
+
+### Remotive
+- **Used for:** remote-first tech job board, supplements the aggregators for the user's top preference (remote)
+- **Auth:** none, no key
+- **Endpoint:** `GET remotive.com/api/remote-jobs?search=<title>&limit=20` - one call per search title per discover run, spaced 0.6s apart per their light-usage request
+- **Caveat (found live 2026-07-20):** `search` matches job descriptions too, not just titles - a GenAI query returned "Freelance Writer". Results are therefore re-filtered locally by title match before storage.
+- **Fields:** `title`, `company_name`, `candidate_required_location` ("USA", "Worldwide", "Europe" - non-US-eligible postings are skipped), free-text `salary` ("$120k-$150k", parsed best-effort), `publication_date`, HTML `description`, `url`
+
+### RemoteOK
+- **Used for:** same as Remotive - remote tech board, free
+- **Auth:** none; requires a descriptive `User-Agent` header (sent), and their terms ask for a link back when listings are republished (we only store locally)
+- **Endpoint:** `GET remoteok.com/api` - a single call returns the whole active board (~100 jobs; first array element is a legal notice, skipped). Filtered locally against the profile's titles and US eligibility.
+- **Fields:** `position`, `company`, `location`, numeric `salary_min`/`salary_max` (0 = unknown), `epoch`, HTML `description`, `apply_url`/`url`
 
 ### Nominatim (OpenStreetMap geocoding)
 - **Used for:** the `within <N> miles of <place>` location preference (docs/DECISIONS.md D12) - resolving preference anchors and job locations without coordinates to lat/long for distance sorting. Adzuna already ships coordinates; this covers JSearch and ATS-board jobs.
