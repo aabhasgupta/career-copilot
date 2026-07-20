@@ -55,13 +55,14 @@ career-copilot/
 
 ## Phases
 
-### [x] Phase 0 - Foundation (code complete; end-to-end verify pending user's real resume + API key)
+### [x] Phase 0 - Foundation - DONE, verified against the user's real resume and API key (2026-07-19)
 Project scaffolding, `profile.yaml` schema + loader, DB models, resume ingestion: parse PDF, Claude extracts a structured profile (skills, experience, seniority, contact info) cached as JSON for downstream prompts. `copilot profile fill` auto-populates the `identity` block of `profile.yaml` from the extracted resume (comment-preserving merge via ruamel.yaml) - applied automatically since it only overwrites with facts the resume actually states. `copilot profile suggest-titles` proposes `search.titles` by combining the resume with a live Claude web-search of current market demand; this is a judgment call, not a fact, so it always shows suggestions and asks before writing (`--apply`/`--no-apply` to skip the prompt). `visa`/`email_integration` stay fully manual. CLI: `copilot init`, `copilot profile fill`, `copilot profile suggest-titles`, `copilot profile show`.
-**Verify**: `copilot profile show` prints an accurate structured summary of the real resume.
+**Verify**: `copilot profile show` prints an accurate structured summary of the real resume. Done - extracted profile matched the user's real background exactly (seniority, GenAI/ML skill set, full work history).
 
 ### [ ] Phase 1 - Discovery
-Adzuna client (free key), optional JSearch. Normalize postings, dedupe (company+title+location hash). ATS URL sniffing, slug extraction, full JD fetch from Greenhouse/Lever/Ashby. Auto-watchlist discovered companies; `copilot discover` also polls watchlisted companies' boards directly. CLI: `copilot discover`, `copilot jobs list`.
-**Verify**: real discovery run for the user's target roles; real postings land in the DB with full JD text for ATS-backed ones; re-running creates no duplicates.
+UPDATE: JSearch promoted from optional to core (alongside Adzuna) - Adzuna alone doesn't reliably cover LinkedIn/Indeed; JSearch closes that gap via its `/search-v2` endpoint (see docs/APIS.md for the confirmed-working endpoint shape, since the commonly-documented `/search` path 404s - it's been renamed). ATS pollers (Greenhouse/Lever/Ashby) are deferred, not dropped: ship Adzuna + JSearch discovery first, evaluate real JD text quality from the aggregators, and only add ATS enrichment if that quality genuinely needs supplementing for Phase 2 fit-scoring.
+Adzuna client (free key) + JSearch client (`/search-v2`, RapidAPI). Normalize postings, dedupe (company+title+location hash). Auto-watchlist discovered companies for future ATS polling if that layer gets added later. CLI: `copilot discover`, `copilot jobs list`.
+**Verify**: real discovery run for the user's target roles; real postings land in the DB; re-running creates no duplicates.
 
 ### [ ] Phase 2 - Fit scoring, sponsorship research, email sending
 LLM rubric scoring each job against the structured resume: skill match, experience level, domain, location/remote, visa feasibility. Produces a 0-100 score plus written reasoning stored on the job. Sponsorship module: detect explicit visa language in JDs; per company, look up public H1B data (USCIS H-1B Employer Data Hub / DOL LCA disclosure CSVs) for filing counts as transfer-likelihood evidence.
@@ -88,6 +89,8 @@ On `interviewing`: prep brief from the JD, company research (web search for inte
 
 ### [ ] Later / optional
 Local web dashboard (`copilot dashboard`, localhost) reading the same DB; push notifications (Telegram/Slack); off-machine scheduling (GitHub Actions or small VM) if laptop-closed latency becomes a problem.
+
+`copilot apis status` - lists every API in docs/APIS.md with rate limit / used / remaining. Design constraint: never spend quota making a dedicated call just to check status - JSearch (and most rate-limited APIs) report current usage via response headers (`x-ratelimit-requests-limit` etc.) on every real call already being made for actual work, so capture and persist those opportunistically (e.g. a small table or JSON file updated after each real API call) and have the command just read the latest known values.
 
 ## Build approach
 

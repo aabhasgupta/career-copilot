@@ -21,6 +21,7 @@ Python 3.12 + uv, SQLAlchemy/SQLite, Typer CLI, Claude API (claude-sonnet-5) for
 
 - Full phased roadmap: docs/PLAN.md (check off phases as completed)
 - Decision log: docs/DECISIONS.md
+- External API reference (what's integrated, auth, endpoints, known rate limits): docs/APIS.md - update it whenever an integration is added or a limit is discovered
 - Current: Phase 0 code complete (scaffold, config, DB models, resume extraction via structured outputs, `copilot init` / `copilot profile show`). End-to-end verification with the user's real resume and API key is the remaining Phase 0 step. Next: Phase 1 discovery. (The cloud Ultraplan session was abandoned; ignore any artifacts from it.)
 
 ## Conventions
