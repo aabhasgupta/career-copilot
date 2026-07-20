@@ -43,6 +43,9 @@ search:
   # healthcare, tech, consulting, staffing, government, retail, manufacturing,
   # energy, education, media, nonprofit, other.
   industry_preference: []  # e.g. ["fintech", "banking", "tech"]
+  # Direct employer postings rank above staffing-agency postings; set false
+  # (or list "staffing" above) if agency roles are fine for you.
+  deprioritize_staffing: true
 
 visa:
   needs_sponsorship: true

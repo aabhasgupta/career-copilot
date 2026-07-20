@@ -81,6 +81,8 @@ contains any of these are never stored</span></label>
 <label>Industry preference <span class="hint">one per line, most preferred first.
 Valid values: {industry_vocab}</span></label>
 <textarea name="industry_preference">{industry_preference}</textarea>
+<label><input type="checkbox" name="deprioritize_staffing" style="width:auto"
+{staffing_checked}> Rank direct employers above staffing agencies</label>
 </fieldset>
 <button type="submit">Save</button>
 </form>
@@ -118,6 +120,7 @@ def create_app(profile_path: Path = Path("profile.yaml")) -> FastAPI:
             location_preference=_lines(search.location_preference),
             industry_preference=_lines(search.industry_preference),
             industry_vocab=", ".join(i.value for i in Industry),
+            staffing_checked="checked" if search.deprioritize_staffing else "",
         )
 
     @app.get("/", response_class=HTMLResponse)
@@ -137,6 +140,7 @@ def create_app(profile_path: Path = Path("profile.yaml")) -> FastAPI:
         dealbreakers: str = Form(""),
         location_preference: str = Form(""),
         industry_preference: str = Form(""),
+        deprioritize_staffing: str | None = Form(None),
     ):
         updates = {
             "titles": _parse_lines(titles),
@@ -146,6 +150,7 @@ def create_app(profile_path: Path = Path("profile.yaml")) -> FastAPI:
             "dealbreakers": _parse_lines(dealbreakers),
             "location_preference": _parse_lines(location_preference),
             "industry_preference": _parse_lines(industry_preference),
+            "deprioritize_staffing": deprioritize_staffing is not None,
         }
 
         # Validate the merged profile before touching the file.

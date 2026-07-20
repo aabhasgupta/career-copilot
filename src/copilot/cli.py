@@ -356,6 +356,10 @@ def jobs_list(
     floor = None if show_all else (min_salary if min_salary is not None else profile.search.min_salary)
     rules = build_rules(profile.search.location_preference, Geocoder())
     industries = profile.search.industry_preference
+    downrank_staffing = profile.search.deprioritize_staffing
+
+    def ind_tier(j):
+        return industry_tier(j, industries, downrank_staffing)
 
     engine = get_engine()
     with get_session(engine) as session:
@@ -372,12 +376,16 @@ def jobs_list(
             console.print("[yellow]No jobs found.[/] Run 'copilot discover' first.")
             return
 
-        # Equal-weight blend of the two preference dimensions; ties broken by
-        # location tier, then salary, then recency.
+        # Staffing-agency jobs always sort after direct employers (dominant
+        # rule, not blended - a remote staffing role must not outrank a
+        # non-remote direct one). Within each group: equal-weight blend of the
+        # two preference dimensions, ties broken by location tier, then
+        # salary, then recency.
         ranked = sorted(
             jobs,
             key=lambda j: (
-                preference_tier(j, rules) + industry_tier(j, industries),
+                ind_tier(j) > len(industries),
+                preference_tier(j, rules) + min(ind_tier(j), len(industries)),
                 preference_tier(j, rules),
                 -(j.salary_max or j.salary_min or 0),
                 -(j.created_at.timestamp() if j.created_at else 0),
@@ -388,7 +396,7 @@ def jobs_list(
         table.add_column("ID", width=4)
         if rules:
             table.add_column("Pref")
-        if industries:
+        if industries or downrank_staffing:
             table.add_column("Industry")
         table.add_column("Title")
         table.add_column("Company")
@@ -406,8 +414,8 @@ def jobs_list(
             row = [str(job.id)]
             if rules:
                 row.append(tier_label(preference_tier(job, rules), rules))
-            if industries:
-                row.append(industry_label(industry_tier(job, industries), industries))
+            if industries or downrank_staffing:
+                row.append(industry_label(ind_tier(job), industries))
             row += [job.title, company_name, job.location or "unknown", salary, job.source]
             table.add_row(*row)
         console.print(table)

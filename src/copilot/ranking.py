@@ -104,15 +104,25 @@ def tier_label(tier: int, rules: list[_Rule]) -> str:
     return rules[tier].label if tier < len(rules) else "-"
 
 
-def industry_tier(job: Job, industry_preference: list[str]) -> int:
-    """Index of the job's company industry in the preference list;
-    len(list) if the industry is unknown or unpreferred."""
+def industry_tier(
+    job: Job, industry_preference: list[str], deprioritize_staffing: bool = True
+) -> int:
+    """Index of the job's company industry in the preference list; len(list)
+    if unknown or unpreferred. Staffing agencies sort one tier below even
+    that (direct employer postings are preferred as a general rule) unless
+    "staffing" is explicitly listed as a preference."""
     industry = (job.company.industry or "").lower() if job.company else ""
     for i, entry in enumerate(industry_preference):
         if entry.strip().lower() == industry:
             return i
+    if deprioritize_staffing and industry == "staffing":
+        return len(industry_preference) + 1
     return len(industry_preference)
 
 
 def industry_label(tier: int, industry_preference: list[str]) -> str:
-    return industry_preference[tier] if tier < len(industry_preference) else "-"
+    if tier < len(industry_preference):
+        return industry_preference[tier]
+    if tier == len(industry_preference):
+        return "-"
+    return "staffing↓"

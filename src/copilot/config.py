@@ -68,6 +68,9 @@ class SearchPreferences(BaseModel):
     # in industry.py (banking, fintech, tech, consulting, ...). Reorders
     # listings, never drops them.
     industry_preference: list[str] = Field(default_factory=list)
+    # Direct employer postings rank above staffing-agency postings. Listing
+    # "staffing" in industry_preference overrides this.
+    deprioritize_staffing: bool = True
 
 
 class VisaPreferences(BaseModel):

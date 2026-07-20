@@ -89,3 +89,22 @@ def test_industry_tier_matches_company_label(tmp_path: Path):
     assert industry_tier(unknown_job, prefs) == 3
     assert industry_label(1, prefs) == "fintech"
     assert industry_label(3, prefs) == "-"
+
+
+def test_staffing_deprioritized_below_unmatched(tmp_path: Path):
+    from copilot.db.models import Company
+    from copilot.ranking import industry_label, industry_tier
+
+    prefs = ["banking", "fintech"]
+    staffing_job = _job()
+    staffing_job.company = Company(name="Kforce", industry="staffing")
+    unknown_job = _job()
+    unknown_job.company = Company(name="Mystery Co", industry="retail")
+
+    assert industry_tier(unknown_job, prefs) == 2
+    assert industry_tier(staffing_job, prefs) == 3  # below even unmatched
+    assert industry_label(3, prefs) == "staffing↓"
+    # Explicitly preferring staffing overrides the rule
+    assert industry_tier(staffing_job, ["staffing"]) == 0
+    # Flag off: staffing is just another unmatched industry
+    assert industry_tier(staffing_job, prefs, deprioritize_staffing=False) == 2
