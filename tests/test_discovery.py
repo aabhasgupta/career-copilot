@@ -302,3 +302,59 @@ def test_is_non_us_bare_canadian_cities():
     assert is_non_us("Toronto")
     assert is_non_us("Vancouver")
     assert not is_non_us("Seattle")
+
+
+def test_quota_exhaustion_reported_once_and_source_skipped(tmp_path, monkeypatch):
+    import httpx
+
+    import copilot.discovery.pipeline as pipeline
+    from copilot.config import Profile
+    from copilot.db import get_engine, get_session, init_db
+
+    profile = Profile.model_validate(
+        {
+            "identity": {"full_name": "X", "email": "x@example.com"},
+            "resume_path": "data/resume.pdf",
+            "search": {"titles": ["AI Engineer", "Data Scientist"], "locations": ["United States"]},
+            "visa": {"needs_sponsorship": True, "status": "h1b_transfer"},
+            "email_integration": {"provider": "outlook", "address": "x@hotmail.com"},
+        }
+    )
+
+    calls = {"jsearch": 0}
+
+    def quota_hit(*args, **kwargs):
+        calls["jsearch"] += 1
+        req = httpx.Request("GET", "https://jsearch.p.rapidapi.com/search-v2")
+        raise httpx.HTTPStatusError(
+            "429 Too Many Requests", request=req, response=httpx.Response(429, request=req)
+        )
+
+    def one_job(title, location, *args, **kwargs):
+        return [
+            DiscoveredJob(
+                title=title, company_name="Acme", location=location,
+                source="adzuna", apply_url=f"https://x.com/{title}",
+            )
+        ]
+
+    monkeypatch.setattr(pipeline, "search_jsearch", quota_hit)
+    monkeypatch.setattr(pipeline, "search_adzuna", one_job)
+    import copilot.discovery.remote_boards as rb
+    monkeypatch.setattr(rb, "search_remotive", lambda titles: [])
+    monkeypatch.setattr(rb, "fetch_remoteok", lambda titles: [])
+
+    engine = get_engine(tmp_path / "t.db")
+    init_db(engine)
+    with get_session(engine) as session:
+        summary = pipeline.run_discovery(
+            profile, session,
+            adzuna_app_id="id", adzuna_app_key="key", jsearch_api_key="key",
+        )
+
+    # Quota reported once as informational, not per query, and not an error;
+    # JSearch skipped after the first hit; Adzuna still ingested both titles.
+    assert summary.quota_exhausted == ["JSearch"]
+    assert calls["jsearch"] == 1
+    assert summary.errors == []
+    assert summary.added == 2

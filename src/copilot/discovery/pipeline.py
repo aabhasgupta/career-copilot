@@ -32,6 +32,13 @@ class DiscoverySummary:
     duplicates: int = 0
     dealbreakers_dropped: int = 0
     errors: list[str] = field(default_factory=list)
+    # Sources that hit their rate/quota limit this run - informational, not
+    # an error: the other sources still ran.
+    quota_exhausted: list[str] = field(default_factory=list)
+
+
+def _is_quota_error(exc: Exception) -> bool:
+    return isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in (402, 429)
 
 
 @dataclass
@@ -156,34 +163,45 @@ def run_discovery(
             else:
                 summary.duplicates += 1
 
+    # A source that hits its quota is skipped for the rest of the run - no
+    # point burning more calls that will all be rejected - and reported as
+    # informational rather than as an error.
+    exhausted: set[str] = set()
+
+    def run_source(name: str, fn, context: str = "") -> None:
+        if name in exhausted:
+            return
+        try:
+            ingest(fn())
+        except Exception as exc:  # noqa: BLE001 - one source failing shouldn't kill the run
+            if _is_quota_error(exc):
+                exhausted.add(name)
+                summary.quota_exhausted.append(name)
+            else:
+                where = f"[{context}]" if context else ""
+                summary.errors.append(f"{name}{where}: {exc}")
+
     for title in profile.search.titles:
         for location in profile.search.locations:
             if adzuna_app_id and adzuna_app_key:
-                try:
-                    ingest(search_adzuna(title, location, adzuna_app_id, adzuna_app_key))
-                except Exception as exc:  # noqa: BLE001 - one source failing shouldn't kill the run
-                    summary.errors.append(f"adzuna[{title} / {location}]: {exc}")
-
+                run_source(
+                    "Adzuna",
+                    lambda t=title, l=location: search_adzuna(t, l, adzuna_app_id, adzuna_app_key),
+                    context=f"{title} / {location}",
+                )
             if jsearch_api_key:
-                try:
-                    ingest(
-                        search_jsearch(
-                            title, location, jsearch_api_key, date_posted=jsearch_date_posted
-                        )
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    summary.errors.append(f"jsearch[{title} / {location}]: {exc}")
+                run_source(
+                    "JSearch",
+                    lambda t=title, l=location: search_jsearch(
+                        t, l, jsearch_api_key, date_posted=jsearch_date_posted
+                    ),
+                    context=f"{title} / {location}",
+                )
 
     # Remote-first boards: free, keyless, not location-scoped - they run
     # against titles only.
-    try:
-        ingest(search_remotive(profile.search.titles))
-    except Exception as exc:  # noqa: BLE001
-        summary.errors.append(f"remotive: {exc}")
-    try:
-        ingest(fetch_remoteok(profile.search.titles))
-    except Exception as exc:  # noqa: BLE001
-        summary.errors.append(f"remoteok: {exc}")
+    run_source("Remotive", lambda: search_remotive(profile.search.titles))
+    run_source("RemoteOK", lambda: fetch_remoteok(profile.search.titles))
 
     session.commit()
     return summary

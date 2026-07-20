@@ -247,6 +247,12 @@ def discover(
             f"[dim]{summary.duplicates} already known[/], "
             f"[yellow]{summary.dealbreakers_dropped} dropped (dealbreaker)[/]"
         )
+        for source in summary.quota_exhausted:
+            console.print(
+                f"[yellow]{source} has reached its usage limit[/] - no jobs pulled "
+                "from it this run. The other sources were still searched, and "
+                f"{source} resumes automatically when its limit resets."
+            )
         for err in summary.errors:
             console.print(f"[red]Error:[/] {err}")
 
