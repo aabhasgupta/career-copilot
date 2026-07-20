@@ -58,6 +58,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
+    { name = "httpx" },
     { name = "pydantic", extra = ["email"] },
     { name = "python-dotenv" },
     { name = "pyyaml" },
@@ -75,6 +76,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "anthropic", specifier = ">=0.116.0" },
+    { name = "httpx", specifier = ">=0.28.1" },
     { name = "pydantic", extras = ["email"], specifier = ">=2.7" },
     { name = "python-dotenv", specifier = ">=1.0" },
     { name = "pyyaml", specifier = ">=6.0" },

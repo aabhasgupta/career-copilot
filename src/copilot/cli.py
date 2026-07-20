@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 from pathlib import Path
 
@@ -17,7 +18,9 @@ load_dotenv()
 
 app = typer.Typer(help="Job-search copilot. You always click submit.")
 profile_app = typer.Typer(help="Your profile and resume.")
+jobs_app = typer.Typer(help="Discovered jobs.")
 app.add_typer(profile_app, name="profile")
+app.add_typer(jobs_app, name="jobs")
 
 console = Console()
 
@@ -186,6 +189,105 @@ def profile_show(
         f"visa: {profile.visa.status.value} | "
         f"remote: {profile.search.remote.value}[/]"
     )
+
+
+@app.command()
+def discover() -> None:
+    """Search Adzuna + JSearch for every title/location in your profile and
+    save new postings to the database. Safe to re-run - duplicates are
+    skipped, not re-added."""
+    profile_path = Path(PROFILE_FILENAME)
+    if not profile_path.exists():
+        console.print(f"[red]{PROFILE_FILENAME} not found.[/] Run 'copilot init' first.")
+        raise typer.Exit(1)
+
+    profile = load_profile()
+
+    adzuna_app_id = os.environ.get("ADZUNA_APP_ID")
+    adzuna_app_key = os.environ.get("ADZUNA_APP_KEY")
+    jsearch_api_key = os.environ.get("JSEARCH_API_KEY")
+
+    if not (adzuna_app_id and adzuna_app_key) and not jsearch_api_key:
+        console.print(
+            "[red]No discovery source configured.[/] Set ADZUNA_APP_ID + ADZUNA_APP_KEY "
+            "and/or JSEARCH_API_KEY in .env."
+        )
+        raise typer.Exit(1)
+
+    from copilot.db import get_engine, get_session, init_db
+    from copilot.discovery.pipeline import run_discovery
+
+    engine = get_engine()
+    init_db(engine)
+
+    titles = ", ".join(profile.search.titles)
+    locations = ", ".join(profile.search.locations)
+    with console.status(f"Searching for {titles} in {locations}..."):
+        with get_session(engine) as session:
+            summary = run_discovery(
+                profile,
+                session,
+                adzuna_app_id=adzuna_app_id,
+                adzuna_app_key=adzuna_app_key,
+                jsearch_api_key=jsearch_api_key,
+            )
+
+    console.print(
+        f"[green]Found {summary.found}[/] postings - "
+        f"[green]{summary.added} new[/], "
+        f"[dim]{summary.duplicates} already known[/], "
+        f"[yellow]{summary.dealbreakers_dropped} dropped (dealbreaker)[/]"
+    )
+    for err in summary.errors:
+        console.print(f"[red]Error:[/] {err}")
+
+    console.print("[dim]Run 'copilot jobs list' to see them.[/]")
+
+
+@jobs_app.command("list")
+def jobs_list(
+    min_salary: int | None = typer.Option(None, "--min-salary", help="Filter by salary_min."),
+    location: str | None = typer.Option(None, "--location", help="Substring match on location."),
+    limit: int = typer.Option(25, "--limit", help="Max rows to show."),
+) -> None:
+    """List discovered jobs, newest first."""
+    from sqlalchemy import select
+
+    from copilot.db import get_engine, get_session
+    from copilot.db.models import Job
+
+    engine = get_engine()
+    with get_session(engine) as session:
+        stmt = select(Job).order_by(Job.created_at.desc()).limit(limit)
+        if min_salary is not None:
+            stmt = stmt.where(Job.salary_min >= min_salary)
+        if location:
+            stmt = stmt.where(Job.location.ilike(f"%{location}%"))
+        jobs = session.scalars(stmt).all()
+
+        if not jobs:
+            console.print("[yellow]No jobs found.[/] Run 'copilot discover' first.")
+            return
+
+        table = Table(title=f"Jobs ({len(jobs)} shown)")
+        table.add_column("ID", width=4)
+        table.add_column("Title")
+        table.add_column("Company")
+        table.add_column("Location")
+        table.add_column("Salary")
+        table.add_column("Source")
+        for job in jobs:
+            company_name = job.company.name if job.company else "?"
+            if job.salary_min or job.salary_max:
+                lo = f"{job.salary_min:,}" if job.salary_min else "?"
+                hi = f"{job.salary_max:,}" if job.salary_max else "?"
+                salary = f"${lo}-${hi}"
+            else:
+                salary = "unknown"
+            table.add_row(
+                str(job.id), job.title, company_name, job.location or "unknown", salary, job.source
+            )
+        console.print(table)
 
 
 if __name__ == "__main__":

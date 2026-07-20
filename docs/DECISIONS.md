@@ -15,6 +15,7 @@ What we chose, why, and what we rejected. New sessions: read this before proposi
 ## D3: No hand-curated company list; watchlist builds itself
 **Chosen**: broad aggregator search is the front door; when a result's apply URL reveals a Greenhouse/Lever/Ashby slug, the company auto-joins a watchlist whose boards are polled directly thereafter.
 **Why**: the user explicitly does not want to be restricted to a fixed company list. ATS boards give cleaner JDs and earlier postings than aggregators, so the system gets faster and richer the longer it runs.
+**Update (2026-07-19, Phase 1 build)**: the detection code is implemented (`discovery/ats.py`) and correct, but in practice it finds nothing - Adzuna's apply link always proxies through `adzuna.com` rather than the employer's own posting, and live JSearch sampling never returned a direct apply link either (`job_apply_is_direct` was `false` on every result checked). The self-building watchlist as originally scoped needs real ATS URLs to key off of, which these two aggregators don't expose. Not reversing the decision - still no hand-curated list - but the mechanism that was supposed to grow the watchlist automatically doesn't currently have anything to grow it from; worth revisiting if ATS coverage becomes a real gap in Phase 2 scoring.
 
 ## D4: Single-user architecture, generic through configuration
 **Chosen**: all personal data in `profile.yaml` + resume file; code reads config, never hardcodes the user.
