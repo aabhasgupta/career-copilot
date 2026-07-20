@@ -97,6 +97,8 @@ class Job(Base):
     company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"), index=True)
     title: Mapped[str] = mapped_column(String(255))
     location: Mapped[str | None] = mapped_column(String(255))
+    latitude: Mapped[float | None] = mapped_column(Float)
+    longitude: Mapped[float | None] = mapped_column(Float)
     remote: Mapped[bool | None] = mapped_column()
     employment_type: Mapped[str | None] = mapped_column(String(64))
     seniority_level: Mapped[str | None] = mapped_column(String(64))

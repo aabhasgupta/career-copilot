@@ -38,11 +38,18 @@ uv run copilot discover      # searches Adzuna + JSearch for every title/locatio
                              # profile, then probes each company for a public Greenhouse/
                              # Lever/Ashby board - matched jobs get direct employer apply
                              # links and full JD text instead of aggregator redirects
-uv run copilot jobs list                     # newest first
-uv run copilot jobs list --min-salary 150000 --location remote
+uv run copilot jobs list                     # best first (see below)
+uv run copilot jobs list --location chicago  # plus ad-hoc filters
+uv run copilot jobs list --all               # ignore the salary floor
 ```
 
 Re-running `discover` is always safe: postings are deduped by company+title+location, so nothing is stored twice.
+
+Listings come back ordered by your preferences, not just recency. In `profile.yaml`:
+
+- `search.location_preference` - ordered list that *sorts* jobs (never hides them): `remote`, `within 30 miles of <place>` (real distances - jobs are geocoded once and cached), or plain location text
+- `search.min_salary` - floor that *hides* jobs whose known salary is below it; jobs that don't state a salary are always kept
+- `search.dealbreakers` - hard drops at discovery time
 
 ## Development
 

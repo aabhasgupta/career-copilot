@@ -61,6 +61,8 @@ def _normalize(result: dict, source_query_location: str) -> DiscoveredJob:
         title=title,
         company_name=company_name,
         location=location_display or source_query_location,
+        latitude=result.get("latitude"),
+        longitude=result.get("longitude"),
         remote=_looks_remote(title, location_display),
         employment_type=employment_type,
         salary_min=int(salary_min) if salary_min else None,

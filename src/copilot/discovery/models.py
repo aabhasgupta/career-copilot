@@ -13,6 +13,8 @@ class DiscoveredJob(BaseModel):
     title: str
     company_name: str
     location: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
     remote: bool | None = None
     employment_type: str | None = None
     salary_min: int | None = None

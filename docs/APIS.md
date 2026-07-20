@@ -39,6 +39,12 @@ Every third-party service this project talks to, what it's for, how it's authent
   - Ashby: `GET api.ashbyhq.com/posting-api/job-board/{slug}` (postings with `title`, `jobUrl`, `location`, `isRemote`, `isListed`, `publishedAt`, `descriptionPlain`).
 - **Slug-collision caveat:** only Greenhouse returns the company name, so only Greenhouse hits can be verified. Loose slug guesses (first word of a multi-word company name) are therefore Greenhouse-only; Lever/Ashby accept full-name slugs only. This is load-bearing: loose Lever probing matched Capital One to an unrelated board named "capital" in live testing.
 
+### Nominatim (OpenStreetMap geocoding)
+- **Used for:** the `within <N> miles of <place>` location preference (docs/DECISIONS.md D12) - resolving preference anchors and job locations without coordinates to lat/long for distance sorting. Adzuna already ships coordinates; this covers JSearch and ATS-board jobs.
+- **Auth:** none. Courtesy requirements: a descriptive `User-Agent` header (sent) and roughly 1 request/second (throttled in `geocode.py`).
+- **Endpoint:** `GET nominatim.openstreetmap.org/search?q=<place>&format=json&limit=1&countrycodes=us`
+- **Caching (load-bearing):** every result - including failed lookups - is cached forever in `data/geocode_cache.json`, so each distinct place name costs exactly one request ever. The backfill runs inside `copilot discover`; a first run over ~100 jobs took about a minute, subsequent runs are near-instant.
+
 ## Planned, not yet integrated
 
 - **Microsoft Graph API** - Outlook/Hotmail inbox monitoring and sending (Phase 2 for sending, Phase 4 for monitoring). Auth via MSAL device-code flow, not a static key.

@@ -244,6 +244,13 @@ def discover() -> None:
         with console.status("Checking companies for public ATS job boards..."):
             ats = resolve_and_poll_ats(profile, session)
 
+        from copilot.discovery.pipeline import geocode_missing_coordinates
+
+        with console.status("Geocoding job locations (cached after first run)..."):
+            geocoded = geocode_missing_coordinates(session)
+        if geocoded:
+            console.print(f"[dim]Geocoded {geocoded} job locations.[/]")
+
     if ats.companies_probed or ats.boards_polled:
         console.print(
             f"[green]ATS boards:[/] probed {ats.companies_probed} new companies, "
@@ -259,37 +266,63 @@ def discover() -> None:
 
 @jobs_app.command("list")
 def jobs_list(
-    min_salary: int | None = typer.Option(None, "--min-salary", help="Filter by salary_min."),
+    min_salary: int | None = typer.Option(
+        None, "--min-salary", help="Salary floor; defaults to search.min_salary in profile.yaml."
+    ),
     location: str | None = typer.Option(None, "--location", help="Substring match on location."),
     limit: int = typer.Option(25, "--limit", help="Max rows to show."),
+    show_all: bool = typer.Option(
+        False, "--all", help="Ignore the profile salary floor and show everything."
+    ),
 ) -> None:
-    """List discovered jobs, newest first."""
+    """List discovered jobs, best first: ordered by your location_preference,
+    then salary, then recency. Jobs with unknown salary are always kept -
+    the floor only drops jobs whose known salary is below it."""
     from sqlalchemy import select
 
     from copilot.db import get_engine, get_session
     from copilot.db.models import Job
+    from copilot.geocode import Geocoder
+    from copilot.ranking import build_rules, preference_tier, tier_label
+
+    profile = load_profile()
+    floor = None if show_all else (min_salary if min_salary is not None else profile.search.min_salary)
+    rules = build_rules(profile.search.location_preference, Geocoder())
 
     engine = get_engine()
     with get_session(engine) as session:
-        stmt = select(Job).order_by(Job.created_at.desc()).limit(limit)
-        if min_salary is not None:
-            stmt = stmt.where(Job.salary_min >= min_salary)
+        stmt = select(Job)
         if location:
             stmt = stmt.where(Job.location.ilike(f"%{location}%"))
+        if floor is not None:
+            # Drop only when the posting's best case is known to be below the
+            # floor; unknown salary is kept, never dropped.
+            stmt = stmt.where((Job.salary_max.is_(None)) | (Job.salary_max >= floor))
         jobs = session.scalars(stmt).all()
 
         if not jobs:
             console.print("[yellow]No jobs found.[/] Run 'copilot discover' first.")
             return
 
-        table = Table(title=f"Jobs ({len(jobs)} shown)")
+        ranked = sorted(
+            jobs,
+            key=lambda j: (
+                preference_tier(j, rules),
+                -(j.salary_max or j.salary_min or 0),
+                -(j.created_at.timestamp() if j.created_at else 0),
+            ),
+        )[:limit]
+
+        table = Table(title=f"Jobs ({len(ranked)} of {len(jobs)} shown)")
         table.add_column("ID", width=4)
+        if rules:
+            table.add_column("Pref")
         table.add_column("Title")
         table.add_column("Company")
         table.add_column("Location")
         table.add_column("Salary")
         table.add_column("Source")
-        for job in jobs:
+        for job in ranked:
             company_name = job.company.name if job.company else "?"
             if job.salary_min or job.salary_max:
                 lo = f"{job.salary_min:,}" if job.salary_min else "?"
@@ -297,10 +330,17 @@ def jobs_list(
                 salary = f"${lo}-${hi}"
             else:
                 salary = "unknown"
-            table.add_row(
-                str(job.id), job.title, company_name, job.location or "unknown", salary, job.source
-            )
+            row = [str(job.id)]
+            if rules:
+                row.append(tier_label(preference_tier(job, rules), rules))
+            row += [job.title, company_name, job.location or "unknown", salary, job.source]
+            table.add_row(*row)
         console.print(table)
+        if floor is not None:
+            console.print(
+                f"[dim]Salary floor ${floor:,} applied (unknown-salary jobs kept) - "
+                "--all to see everything.[/]"
+            )
 
 
 if __name__ == "__main__":

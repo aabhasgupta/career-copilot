@@ -69,6 +69,18 @@ def _upsert_job(session: Session, discovered: DiscoveredJob, company: Company) -
     h = dedupe_hash(discovered.company_name, discovered.title, discovered.location)
     existing = session.scalar(select(Job).where(Job.dedupe_hash == h))
     if existing is not None:
+        # The other source may know things this row is missing (e.g. Adzuna
+        # has coordinates and salary estimates JSearch doesn't).
+        if existing.latitude is None and discovered.latitude is not None:
+            existing.latitude = discovered.latitude
+            existing.longitude = discovered.longitude
+        if existing.salary_min is None and discovered.salary_min is not None:
+            existing.salary_min = discovered.salary_min
+            existing.salary_max = discovered.salary_max
+            existing.salary_currency = discovered.salary_currency
+            existing.salary_source = discovered.salary_source
+        if existing.posted_at is None and discovered.posted_at is not None:
+            existing.posted_at = discovered.posted_at
         return False
 
     session.add(
@@ -76,6 +88,8 @@ def _upsert_job(session: Session, discovered: DiscoveredJob, company: Company) -
             company_id=company.id,
             title=discovered.title,
             location=discovered.location,
+            latitude=discovered.latitude,
+            longitude=discovered.longitude,
             remote=discovered.remote,
             employment_type=discovered.employment_type,
             salary_min=discovered.salary_min,
@@ -132,6 +146,27 @@ def run_discovery(
 
     session.commit()
     return summary
+
+
+def geocode_missing_coordinates(session: Session) -> int:
+    """Fill in coordinates for jobs that have a location string but no
+    lat/long (JSearch never provides them; Adzuna does). Cached lookups make
+    this nearly free after the first run - only never-before-seen places hit
+    the geocoder. Returns the number of jobs updated."""
+    from copilot.geocode import Geocoder
+
+    geocoder = Geocoder()
+    updated = 0
+    jobs = session.scalars(
+        select(Job).where(Job.latitude.is_(None), Job.location.is_not(None))
+    ).all()
+    for job in jobs:
+        coords = geocoder.lookup(job.location)
+        if coords:
+            job.latitude, job.longitude = coords
+            updated += 1
+    session.commit()
+    return updated
 
 
 def _normalize_title(title: str) -> str:

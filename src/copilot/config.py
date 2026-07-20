@@ -60,6 +60,10 @@ class SearchPreferences(BaseModel):
     min_salary: int | None = None
     salary_currency: str = "USD"
     dealbreakers: list[str] = Field(default_factory=list)
+    # Ordered, most preferred first. Reorders listings, never drops them.
+    # Entries: "remote", "within <N> miles of <place>", or plain text matched
+    # against the job's location (e.g. "Chicago, IL").
+    location_preference: list[str] = Field(default_factory=list)
 
 
 class VisaPreferences(BaseModel):
