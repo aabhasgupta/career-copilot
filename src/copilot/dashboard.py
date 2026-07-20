@@ -137,6 +137,10 @@ stay visible.</p>
 <label>Industry preference <span class="hint">one per line, most preferred first.
 Vocabulary: {industry_vocab}</span></label>
 <textarea name="industry_preference">{industry_preference}</textarea>
+<label>Company preference <span class="hint">one per line, most preferred first -
+their listings rank higher and their public job boards (Greenhouse/Lever/Ashby)
+are watched directly</span></label>
+<textarea name="company_preference">{company_preference}</textarea>
 <label class="check"><input type="checkbox" name="deprioritize_staffing"
 {staffing_checked}> Rank direct employers above staffing agencies</label>
 </div>
@@ -176,6 +180,7 @@ def create_app(profile_path: Path = Path("profile.yaml")) -> FastAPI:
             dealbreakers=_lines(search.dealbreakers),
             location_preference=_lines(search.location_preference),
             industry_preference=_lines(search.industry_preference),
+            company_preference=_lines(search.company_preference),
             industry_vocab=", ".join(i.value for i in Industry),
             staffing_checked="checked" if search.deprioritize_staffing else "",
         )
@@ -197,6 +202,7 @@ def create_app(profile_path: Path = Path("profile.yaml")) -> FastAPI:
         dealbreakers: str = Form(""),
         location_preference: str = Form(""),
         industry_preference: str = Form(""),
+        company_preference: str = Form(""),
         deprioritize_staffing: str | None = Form(None),
     ):
         updates = {
@@ -206,6 +212,7 @@ def create_app(profile_path: Path = Path("profile.yaml")) -> FastAPI:
             "dealbreakers": _parse_lines(dealbreakers),
             "location_preference": _parse_lines(location_preference),
             "industry_preference": _parse_lines(industry_preference),
+            "company_preference": _parse_lines(company_preference),
             "deprioritize_staffing": deprioritize_staffing is not None,
         }
 

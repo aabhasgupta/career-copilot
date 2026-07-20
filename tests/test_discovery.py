@@ -294,3 +294,11 @@ def test_is_non_us_blocks_countries_keeps_us():
     assert not is_non_us("Remote US")
     assert not is_non_us("Anywhere")
     assert not is_non_us(None)
+
+
+def test_is_non_us_bare_canadian_cities():
+    from copilot.discovery.locations import is_non_us
+
+    assert is_non_us("Toronto")
+    assert is_non_us("Vancouver")
+    assert not is_non_us("Seattle")

@@ -18,6 +18,8 @@ import re
 _NON_US_MARKERS = [
     "united kingdom", "uk", "england", "scotland", "wales", "ireland",
     "canada", "ontario", "quebec", "british columbia", "alberta",
+    # ATS boards often write bare city names; these are unambiguous majors
+    "toronto", "vancouver", "montreal", "ottawa", "calgary",
     "india", "israel", "germany", "poland", "spain", "portugal",
     "netherlands", "france", "italy", "romania", "bulgaria", "ukraine",
     "hungary", "czech", "austria", "switzerland", "sweden", "norway",

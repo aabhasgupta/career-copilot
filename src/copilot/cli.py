@@ -355,6 +355,7 @@ def jobs_list(
     from copilot.geocode import Geocoder
     from copilot.ranking import (
         build_rules,
+        company_tier,
         industry_label,
         industry_tier,
         preference_tier,
@@ -365,6 +366,7 @@ def jobs_list(
     floor = None if show_all else (min_salary if min_salary is not None else profile.search.min_salary)
     rules = build_rules(profile.search.location_preference, Geocoder())
     industries = profile.search.industry_preference
+    companies = profile.search.company_preference
     downrank_staffing = profile.search.deprioritize_staffing
 
     def ind_tier(j):
@@ -394,7 +396,9 @@ def jobs_list(
             jobs,
             key=lambda j: (
                 ind_tier(j) > len(industries),
-                preference_tier(j, rules) + min(ind_tier(j), len(industries)),
+                preference_tier(j, rules)
+                + min(ind_tier(j), len(industries))
+                + company_tier(j, companies),
                 preference_tier(j, rules),
                 -(j.salary_max or j.salary_min or 0),
                 -(j.created_at.timestamp() if j.created_at else 0),

@@ -120,6 +120,22 @@ def industry_tier(
     return len(industry_preference)
 
 
+def _company_words(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", name.lower()).strip()
+
+
+def company_tier(job: Job, company_preference: list[str]) -> int:
+    """Index of the first preference entry naming the job's company;
+    len(list) if none. Whole-word matching so "Stripe" doesn't catch
+    "Stripes Group"."""
+    name = _company_words(job.company.name) if job.company else ""
+    for i, entry in enumerate(company_preference):
+        pattern = r"\b" + re.escape(_company_words(entry)) + r"\b"
+        if re.search(pattern, name):
+            return i
+    return len(company_preference)
+
+
 def industry_label(tier: int, industry_preference: list[str]) -> str:
     if tier < len(industry_preference):
         return industry_preference[tier]

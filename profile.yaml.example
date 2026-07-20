@@ -51,6 +51,10 @@ search:
   # Direct employer postings rank above staffing-agency postings; set false
   # (or list "staffing" above) if agency roles are fine for you.
   deprioritize_staffing: true
+  # Companies you'd love to work for, most preferred first. Their listings
+  # rank higher, and their public Greenhouse/Lever/Ashby boards are
+  # auto-watchlisted so their postings arrive with direct apply links.
+  company_preference: []  # e.g. ["Stripe", "Anthropic"]
 
 visa:
   needs_sponsorship: true

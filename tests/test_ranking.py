@@ -108,3 +108,24 @@ def test_staffing_deprioritized_below_unmatched(tmp_path: Path):
     assert industry_tier(staffing_job, ["staffing"]) == 0
     # Flag off: staffing is just another unmatched industry
     assert industry_tier(staffing_job, prefs, deprioritize_staffing=False) == 2
+
+
+def test_company_tier_whole_word_matching():
+    from copilot.db.models import Company
+    from copilot.ranking import company_tier
+
+    prefs = ["Stripe", "JPMorgan Chase"]
+    stripe_job = _job()
+    stripe_job.company = Company(name="Stripe")
+    stripe_inc_job = _job()
+    stripe_inc_job.company = Company(name="Stripe, Inc.")
+    stripes_job = _job()
+    stripes_job.company = Company(name="Stripes Group")
+    jpmc_job = _job()
+    jpmc_job.company = Company(name="JPMorgan Chase & Co.")
+
+    assert company_tier(stripe_job, prefs) == 0
+    assert company_tier(stripe_inc_job, prefs) == 0
+    assert company_tier(stripes_job, prefs) == 2  # no false positive
+    assert company_tier(jpmc_job, prefs) == 1
+    assert company_tier(stripe_job, []) == 0  # empty prefs: everyone tier 0

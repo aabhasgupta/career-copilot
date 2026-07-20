@@ -378,11 +378,24 @@ def resolve_and_poll_ats(profile: Profile, session: Session) -> ATSSummary:
        we already have upgrade it in place (direct apply URL, full JD text);
        postings matching the profile's search titles are added as new jobs.
     """
+    from sqlalchemy import func
+
     from copilot.rules import load_dealbreaker_rules
 
     summary = ATSSummary()
     rules, rule_errors = load_dealbreaker_rules(profile)
     summary.errors.extend(rule_errors)
+
+    # Preferred companies get seeded into the companies table so their boards
+    # are probed and polled even before any aggregator surfaces a posting of
+    # theirs. Additive only - it never restricts what else is discovered (D3).
+    for name in profile.search.company_preference:
+        existing = session.scalar(
+            select(Company).where(func.lower(Company.name) == name.strip().lower())
+        )
+        if existing is None and name.strip():
+            session.add(Company(name=name.strip()))
+    session.flush()
 
     with httpx.Client(timeout=15) as client:
         for company in session.scalars(

@@ -66,6 +66,10 @@ class SearchPreferences(BaseModel):
     # Direct employer postings rank above staffing-agency postings. Listing
     # "staffing" in industry_preference overrides this.
     deprioritize_staffing: bool = True
+    # Companies you'd love to work for, most preferred first. Their listings
+    # rank higher, and their public ATS job boards are auto-watchlisted so
+    # postings arrive directly even before aggregators index them.
+    company_preference: list[str] = Field(default_factory=list)
 
 
 class VisaPreferences(BaseModel):
