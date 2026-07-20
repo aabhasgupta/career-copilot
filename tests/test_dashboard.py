@@ -47,7 +47,6 @@ def test_save_updates_yaml_and_preserves_comments(tmp_path: Path):
         data={
             "titles": "LLM Engineer\nAI Engineer",
             "locations": "United States",
-            "remote": "remote",
             "min_salary": "160000",
             "dealbreakers": "clearance required",
             "location_preference": "remote\nChicago, IL",
@@ -78,7 +77,6 @@ def test_save_rejects_invalid_and_writes_nothing(tmp_path: Path):
         data={
             "titles": "",  # empty titles violates min_length=1
             "locations": "United States",
-            "remote": "remote",
             "min_salary": "",
             "dealbreakers": "",
             "location_preference": "",

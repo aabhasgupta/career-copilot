@@ -7,7 +7,8 @@ Design constraints:
   comment-preserving ruamel helpers the CLI uses. No second config store.
 - Validate before write: the merged result must pass Profile.model_validate
   or nothing is saved and the error is shown.
-- Localhost only; single user; no auth (D4).
+- Localhost only; single user; no auth (D4). Fully self-contained page -
+  no CDN fonts/scripts.
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ import yaml as pyyaml
 from fastapi import FastAPI, Form
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from copilot.config import Profile, RemotePreference
+from copilot.config import Profile
 from copilot.industry import Industry
 from copilot.profile_fill import update_search_preferences
 
@@ -27,65 +28,126 @@ _PAGE = """<!doctype html>
 <html>
 <head>
 <meta charset="utf-8">
-<title>Career Copilot - Preferences</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Career Copilot</title>
 <style>
-  body {{ font-family: -apple-system, system-ui, sans-serif; max-width: 720px;
-         margin: 2rem auto; padding: 0 1rem; color: #1a1a2e; }}
-  h1 {{ font-size: 1.4rem; }}
-  fieldset {{ border: 1px solid #ddd; border-radius: 8px; margin-bottom: 1rem;
-              padding: 1rem; }}
-  legend {{ font-weight: 600; padding: 0 .5rem; }}
-  label {{ display: block; font-weight: 600; margin: .8rem 0 .2rem; }}
-  .hint {{ font-weight: 400; color: #666; font-size: .85rem; margin: 0 0 .3rem; }}
-  textarea, input, select {{ width: 100%; box-sizing: border-box; padding: .5rem;
-    border: 1px solid #ccc; border-radius: 6px; font: inherit; }}
-  textarea {{ min-height: 5.5rem; }}
-  button {{ margin-top: 1rem; padding: .6rem 1.6rem; border: 0; border-radius: 6px;
-    background: #2b6cb0; color: white; font: inherit; font-weight: 600;
-    cursor: pointer; }}
-  .flash {{ padding: .6rem 1rem; border-radius: 6px; margin-bottom: 1rem; }}
-  .ok {{ background: #e6f6e6; color: #1e5e1e; }}
-  .err {{ background: #fbe9e9; color: #8a1f1f; white-space: pre-wrap; }}
+  :root {{
+    --ink: #16182d; --muted: #6b7186; --line: #e4e6ef;
+    --accent: #4f5bd5; --accent-2: #7a5cd6; --bg: #f3f4fa;
+  }}
+  * {{ box-sizing: border-box; }}
+  body {{ font-family: -apple-system, "SF Pro Text", "Segoe UI", system-ui,
+          sans-serif; margin: 0; background: var(--bg); color: var(--ink); }}
+  header {{
+    background: linear-gradient(120deg, #171a38 0%, #2c2a6b 55%, #4f3d8f 100%);
+    color: #fff; padding: 2.6rem 1.5rem 2.9rem;
+  }}
+  .shell {{ max-width: 780px; margin: 0 auto; }}
+  .brand {{ font-size: 2rem; font-weight: 750; letter-spacing: -.02em; }}
+  .brand .mark {{
+    display: inline-block; margin-right: .55rem; transform: translateY(2px);
+  }}
+  .brand em {{ font-style: normal; color: #b9c0ff; }}
+  .tagline {{ margin-top: .45rem; color: #c9cdea; font-size: .95rem;
+              letter-spacing: .01em; }}
+  .tagline b {{ color: #fff; font-weight: 600; }}
+  main {{ max-width: 780px; margin: -1.4rem auto 3rem; padding: 0 1.5rem; }}
+  .card {{
+    background: #fff; border: 1px solid var(--line); border-radius: 14px;
+    padding: 1.4rem 1.5rem 1.5rem; margin-bottom: 1.1rem;
+    box-shadow: 0 6px 18px rgba(26, 31, 71, .06);
+  }}
+  .card h2 {{
+    margin: 0 0 .2rem; font-size: 1.02rem; letter-spacing: .01em;
+  }}
+  .card .sub {{ margin: 0 0 .9rem; color: var(--muted); font-size: .86rem; }}
+  label {{ display: block; font-weight: 600; font-size: .9rem;
+           margin: 1rem 0 .3rem; }}
+  label:first-of-type {{ margin-top: 0; }}
+  .hint {{ font-weight: 400; color: var(--muted); font-size: .82rem; }}
+  textarea, input[type=number], select {{
+    width: 100%; padding: .55rem .7rem; border: 1px solid var(--line);
+    border-radius: 8px; font: inherit; font-size: .92rem; background: #fbfbfe;
+  }}
+  textarea {{ min-height: 5.2rem; resize: vertical; line-height: 1.5; }}
+  textarea:focus, input:focus, select:focus {{
+    outline: none; border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(79, 91, 213, .15); background: #fff;
+  }}
+  .check {{ display: flex; align-items: center; gap: .55rem; margin-top: 1rem;
+            font-weight: 600; font-size: .9rem; }}
+  .check input {{ width: 1.05rem; height: 1.05rem; accent-color: var(--accent); }}
+  .actions {{ display: flex; align-items: center; gap: 1rem; }}
+  button {{
+    padding: .65rem 2rem; border: 0; border-radius: 9px; color: #fff;
+    background: linear-gradient(120deg, var(--accent), var(--accent-2));
+    font: inherit; font-weight: 650; cursor: pointer;
+    box-shadow: 0 4px 12px rgba(79, 91, 213, .35);
+  }}
+  button:hover {{ filter: brightness(1.07); }}
+  .footnote {{ color: var(--muted); font-size: .8rem; }}
+  .flash {{ padding: .7rem 1rem; border-radius: 10px; margin-bottom: 1.1rem;
+            font-size: .9rem; }}
+  .ok {{ background: #e7f6ec; color: #1d5e33; border: 1px solid #bfe5cb; }}
+  .err {{ background: #fdecec; color: #8a2323; border: 1px solid #f2c7c7;
+          white-space: pre-wrap; }}
 </style>
 </head>
 <body>
-<h1>Career Copilot - Search Preferences</h1>
-<p class="hint">Edits profile.yaml in place (comments preserved). Changes are
-validated before saving. Ordering preferences re-sort listings instantly;
-stricter filters take effect on stored jobs via <code>copilot jobs prune</code>.</p>
+<header>
+  <div class="shell">
+    <div class="brand"><span class="mark">&#x1F9ED;</span>Career <em>Copilot</em></div>
+    <div class="tagline">discover &middot; rank &middot; prepare — <b>you always click submit</b></div>
+  </div>
+</header>
+<main>
 {flash}
 <form method="post" action="/save">
-<fieldset>
-<legend>What to search for</legend>
-<label>Target titles <span class="hint">one per line - what discovery queries for</span></label>
+
+<div class="card">
+<h2>What to search for</h2>
+<p class="sub">Discovery queries every title in every location on each
+<code>copilot discover</code> run.</p>
+<label>Target titles <span class="hint">one per line</span></label>
 <textarea name="titles">{titles}</textarea>
 <label>Search locations <span class="hint">one per line, e.g. "United States"</span></label>
 <textarea name="locations">{locations}</textarea>
-<label>Remote preference</label>
-<select name="remote">{remote_options}</select>
-</fieldset>
-<fieldset>
-<legend>Filters (drop jobs)</legend>
-<label>Salary floor (USD) <span class="hint">jobs with known salary below this are
-dropped; jobs that don't state a salary are always kept. Blank = no floor.</span></label>
+</div>
+
+<div class="card">
+<h2>Filters &mdash; drop jobs entirely</h2>
+<p class="sub">Applied at discovery; run <code>copilot jobs prune</code> after
+tightening to re-apply to stored jobs.</p>
+<label>Salary floor (USD) <span class="hint">jobs with a known salary below this
+are dropped; jobs that don't state pay are always kept. Blank = no floor.</span></label>
 <input name="min_salary" type="number" value="{min_salary}">
-<label>Dealbreakers <span class="hint">one per line; jobs whose title/description
-contains any of these are never stored</span></label>
+<label>Dealbreakers <span class="hint">plain English, one per line - e.g.
+"don't give me jobs based in Alabama", "no clearance jobs", "nothing at Meta".
+Claude compiles these into precise filters on the next discover/prune.</span></label>
 <textarea name="dealbreakers">{dealbreakers}</textarea>
-</fieldset>
-<fieldset>
-<legend>Preferences (reorder, never hide)</legend>
+</div>
+
+<div class="card">
+<h2>Preferences &mdash; reorder, never hide</h2>
+<p class="sub">Listings sort by these instantly; unmatched jobs go last but
+stay visible.</p>
 <label>Location preference <span class="hint">one per line, most preferred first:
 "remote", "within 30 miles of Place, ST", or plain location text</span></label>
 <textarea name="location_preference">{location_preference}</textarea>
 <label>Industry preference <span class="hint">one per line, most preferred first.
-Valid values: {industry_vocab}</span></label>
+Vocabulary: {industry_vocab}</span></label>
 <textarea name="industry_preference">{industry_preference}</textarea>
-<label><input type="checkbox" name="deprioritize_staffing" style="width:auto"
+<label class="check"><input type="checkbox" name="deprioritize_staffing"
 {staffing_checked}> Rank direct employers above staffing agencies</label>
-</fieldset>
-<button type="submit">Save</button>
+</div>
+
+<div class="actions">
+  <button type="submit">Save</button>
+  <span class="footnote">writes profile.yaml &middot; comments preserved &middot;
+  validated before saving</span>
+</div>
 </form>
+</main>
 </body>
 </html>"""
 
@@ -106,15 +168,10 @@ def create_app(profile_path: Path = Path("profile.yaml")) -> FastAPI:
             raw = pyyaml.safe_load(f)
         profile = Profile.model_validate(raw)
         search = profile.search
-        remote_options = "".join(
-            f'<option value="{r.value}"{" selected" if r == search.remote else ""}>{r.value}</option>'
-            for r in RemotePreference
-        )
         return _PAGE.format(
             flash=flash,
             titles=_lines(search.titles),
             locations=_lines(search.locations),
-            remote_options=remote_options,
             min_salary=search.min_salary if search.min_salary is not None else "",
             dealbreakers=_lines(search.dealbreakers),
             location_preference=_lines(search.location_preference),
@@ -129,13 +186,13 @@ def create_app(profile_path: Path = Path("profile.yaml")) -> FastAPI:
 
     @app.get("/saved", response_class=HTMLResponse)
     def saved() -> str:
-        return render(flash='<div class="flash ok">Saved.</div>')
+        return render(flash='<div class="flash ok">Saved. Stricter filters take '
+                      "effect on stored jobs after <code>copilot jobs prune</code>.</div>")
 
     @app.post("/save")
     def save(
         titles: str = Form(""),
         locations: str = Form(""),
-        remote: str = Form("any"),
         min_salary: str = Form(""),
         dealbreakers: str = Form(""),
         location_preference: str = Form(""),
@@ -145,7 +202,6 @@ def create_app(profile_path: Path = Path("profile.yaml")) -> FastAPI:
         updates = {
             "titles": _parse_lines(titles),
             "locations": _parse_lines(locations),
-            "remote": remote,
             "min_salary": int(min_salary) if min_salary.strip() else None,
             "dealbreakers": _parse_lines(dealbreakers),
             "location_preference": _parse_lines(location_preference),

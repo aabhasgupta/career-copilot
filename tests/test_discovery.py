@@ -3,7 +3,6 @@ from copilot.discovery.adzuna import _normalize as normalize_adzuna
 from copilot.discovery.ats import detect_ats
 from copilot.discovery.dedupe import dedupe_hash
 from copilot.discovery.jsearch import _normalize as normalize_jsearch
-from copilot.discovery.pipeline import _hits_dealbreaker
 from copilot.discovery.models import DiscoveredJob
 
 
@@ -89,15 +88,26 @@ def test_normalize_jsearch_basic_fields():
     assert job.source == "jsearch"
 
 
-def test_hits_dealbreaker_matches_title_or_jd_text():
+def test_hits_dealbreaker_matches_compiled_rules():
+    from copilot.discovery.pipeline import _hits_dealbreaker
+    from copilot.rules import CompiledRule, Matcher, RuleField
+
     job = DiscoveredJob(
         title="Staffing Agency Recruiter",
         company_name="Acme",
         source="adzuna",
         apply_url="https://example.com",
     )
-    assert _hits_dealbreaker(job, ["staffing agency"])
-    assert not _hits_dealbreaker(job, ["clearance required"])
+    staffing_rule = CompiledRule(
+        source="no staffing agencies",
+        matchers=[Matcher(field=RuleField.text, patterns=["staffing agency"])],
+    )
+    clearance_rule = CompiledRule(
+        source="no clearance jobs",
+        matchers=[Matcher(field=RuleField.text, patterns=["clearance"])],
+    )
+    assert _hits_dealbreaker(job, [staffing_rule])
+    assert not _hits_dealbreaker(job, [clearance_rule])
 
 
 def test_slug_candidates_strip_legal_suffixes():
@@ -151,11 +161,22 @@ def test_below_salary_floor_unknown_never_trips():
     assert not _below_salary_floor(None, 100000, None)  # no floor set
 
 
-def test_prune_jobs_deletes_violators_keeps_applied(tmp_path):
+def test_prune_jobs_deletes_violators_keeps_applied(tmp_path, monkeypatch):
     from copilot.config import Profile
     from copilot.db import get_engine, get_session, init_db
     from copilot.db.models import Application, Company, Job
     from copilot.discovery.pipeline import prune_jobs
+    import copilot.rules as rules_mod
+
+    # Hermetic: use the no-LLM fallback compilation instead of cache/API
+    monkeypatch.setattr(
+        rules_mod,
+        "load_dealbreaker_rules",
+        lambda profile, cache_path=None: (
+            rules_mod._fallback(profile.search.dealbreakers),
+            [],
+        ),
+    )
 
     profile = Profile.model_validate(
         {

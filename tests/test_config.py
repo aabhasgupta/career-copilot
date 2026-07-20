@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from copilot.config import Profile, RemotePreference, VisaStatus, load_profile
+from copilot.config import Profile, VisaStatus, load_profile
 
 VALID_PROFILE = """
 identity:
@@ -27,7 +27,7 @@ def test_load_valid_profile(tmp_path: Path):
     profile = load_profile(path)
     assert profile.identity.full_name == "Test User"
     assert profile.visa.status == VisaStatus.h1b_transfer
-    assert profile.search.remote == RemotePreference.any
+    assert profile.search.deprioritize_staffing is True
     assert profile.llm.model == "claude-sonnet-5"
 
 

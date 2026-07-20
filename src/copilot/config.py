@@ -19,13 +19,6 @@ DB_PATH = DATA_DIR / "copilot.db"
 RESUME_CACHE_PATH = DATA_DIR / "resume_profile.json"
 
 
-class RemotePreference(str, Enum):
-    remote = "remote"
-    hybrid = "hybrid"
-    onsite = "onsite"
-    any = "any"
-
-
 class VisaStatus(str, Enum):
     none = "none"
     f1_opt = "f1_opt"
@@ -56,7 +49,9 @@ class Identity(BaseModel):
 class SearchPreferences(BaseModel):
     titles: list[str] = Field(min_length=1)
     locations: list[str] = Field(default_factory=lambda: ["United States"])
-    remote: RemotePreference = RemotePreference.any
+    # Note: there is deliberately no separate remote yes/no field - express
+    # remote appetite through location_preference ("remote" first = prefer it)
+    # or dealbreakers ("no fully onsite jobs" = require it).
     min_salary: int | None = None
     salary_currency: str = "USD"
     dealbreakers: list[str] = Field(default_factory=list)

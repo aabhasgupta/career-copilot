@@ -50,7 +50,7 @@ Listings come back ordered by your preferences, not just recency. In `profile.ya
 - `search.location_preference` - ordered list that *sorts* jobs (never hides them): `remote`, `within 30 miles of <place>` (real distances - jobs are geocoded once and cached), or plain location text
 - `search.industry_preference` - ordered industries you fit best (e.g. banking, fintech, tech, consulting); each company is classified once by Claude and the label stored, so ordering stays instant and free
 - `search.min_salary` - hard floor: jobs whose known salary is below it are dropped; jobs that don't state a salary are always kept
-- `search.dealbreakers` - hard drops at discovery time
+- `search.dealbreakers` - hard drops, written in plain English ("no clearance jobs", "don't give me jobs based in Alabama", "nothing at Meta"); Claude compiles them once into precise field-level filters, cached until the list changes
 
 Changed your rules? `uv run copilot jobs prune` re-applies them to everything already stored - no API calls, since the database holds everything ever discovered. Jobs you've applied to are never pruned.
 

@@ -44,9 +44,16 @@ class ATSSummary:
     errors: list[str] = field(default_factory=list)
 
 
-def _hits_dealbreaker(discovered: DiscoveredJob, dealbreakers: list[str]) -> bool:
-    haystack = f"{discovered.title}\n{discovered.jd_text or ''}".lower()
-    return any(d.strip().lower() in haystack for d in dealbreakers if d.strip())
+def _hits_dealbreaker(discovered: DiscoveredJob, rules: list) -> bool:
+    from copilot.rules import job_matches_rules
+
+    return job_matches_rules(
+        rules,
+        title=discovered.title,
+        jd_text=discovered.jd_text,
+        location=discovered.location,
+        company=discovered.company_name,
+    )
 
 
 def _below_salary_floor(
@@ -125,7 +132,11 @@ def run_discovery(
     adzuna_app_key: str | None,
     jsearch_api_key: str | None,
 ) -> DiscoverySummary:
+    from copilot.rules import load_dealbreaker_rules
+
     summary = DiscoverySummary()
+    rules, rule_errors = load_dealbreaker_rules(profile)
+    summary.errors.extend(rule_errors)
 
     for title in profile.search.titles:
         for location in profile.search.locations:
@@ -145,7 +156,7 @@ def run_discovery(
 
             for discovered in discovered_jobs:
                 summary.found += 1
-                if _hits_dealbreaker(discovered, profile.search.dealbreakers) or _below_salary_floor(
+                if _hits_dealbreaker(discovered, rules) or _below_salary_floor(
                     discovered.salary_min, discovered.salary_max, profile.search.min_salary
                 ):
                     summary.dealbreakers_dropped += 1
@@ -193,6 +204,7 @@ def classify_new_companies(profile: Profile, session: Session) -> int:
 class PruneSummary:
     dealbreakers: int = 0
     below_salary_floor: int = 0
+    errors: list[str] = field(default_factory=list)
 
 
 def prune_jobs(profile: Profile, session: Session) -> PruneSummary:
@@ -201,13 +213,20 @@ def prune_jobs(profile: Profile, session: Session) -> PruneSummary:
     effect retroactively without re-calling any discovery API - everything
     ever discovered is already in the DB, so the DB itself is the cache to
     re-derive from. Jobs with an application on file are never pruned."""
+    from copilot.rules import job_matches_rules, load_dealbreaker_rules
+
     summary = PruneSummary()
+    rules, rule_errors = load_dealbreaker_rules(profile)
+    summary.errors.extend(rule_errors)
     for job in session.scalars(select(Job)).all():
         if job.application is not None:
             continue
-        haystack = f"{job.title}\n{job.jd_text or ''}".lower()
-        if any(
-            d.strip().lower() in haystack for d in profile.search.dealbreakers if d.strip()
+        if job_matches_rules(
+            rules,
+            title=job.title,
+            jd_text=job.jd_text,
+            location=job.location,
+            company=job.company.name if job.company else None,
         ):
             summary.dealbreakers += 1
             session.delete(job)
@@ -280,6 +299,7 @@ def _poll_board(
     postings: list[BoardPosting],
     profile: Profile,
     summary: ATSSummary,
+    rules: list,
 ) -> None:
     # Exact title match only: containment would let one generic aggregator
     # title ("AI Engineer") soak up direct links from many board postings.
@@ -325,7 +345,7 @@ def _poll_board(
             ats_type=company.ats_type,
             ats_slug=company.ats_slug,
         )
-        if _hits_dealbreaker(discovered, profile.search.dealbreakers) or _below_salary_floor(
+        if _hits_dealbreaker(discovered, rules) or _below_salary_floor(
             discovered.salary_min, discovered.salary_max, profile.search.min_salary
         ):
             continue
@@ -344,7 +364,11 @@ def resolve_and_poll_ats(profile: Profile, session: Session) -> ATSSummary:
        we already have upgrade it in place (direct apply URL, full JD text);
        postings matching the profile's search titles are added as new jobs.
     """
+    from copilot.rules import load_dealbreaker_rules
+
     summary = ATSSummary()
+    rules, rule_errors = load_dealbreaker_rules(profile)
+    summary.errors.extend(rule_errors)
 
     with httpx.Client(timeout=15) as client:
         for company in session.scalars(
@@ -375,7 +399,7 @@ def resolve_and_poll_ats(profile: Profile, session: Session) -> ATSSummary:
             except Exception as exc:  # noqa: BLE001
                 summary.errors.append(f"board[{company.name}]: {exc}")
                 continue
-            _poll_board(session, company, postings, profile, summary)
+            _poll_board(session, company, postings, profile, summary, rules)
 
     session.commit()
     return summary

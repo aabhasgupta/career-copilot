@@ -26,13 +26,18 @@ search:
     - Backend Engineer
   locations:
     - United States
-  remote: any          # remote | hybrid | onsite | any
+  # (There is deliberately no remote yes/no toggle: put "remote" first in
+  # location_preference below to prefer remote, or add a dealbreaker like
+  # "no fully onsite jobs" to require it.)
   # Salary floor: hides jobs whose known salary is below this. Jobs that
   # don't state a salary are always kept ("unknown, never dropped").
   min_salary: null     # e.g. 120000; null = no floor
   salary_currency: USD
   # Hard filters: jobs matching any of these are dropped, not just downranked.
-  dealbreakers: []     # e.g. ["staffing agency", "clearance required"]
+  # Plain English - Claude compiles these into precise filters (cached until
+  # the list changes). e.g. ["no clearance jobs", "don't give me jobs based
+  # in Alabama", "nothing at Meta"]
+  dealbreakers: []
   # Ordering, not filtering: listings are sorted by these, most preferred
   # first; jobs matching nothing sort last but stay visible.
   # Entry forms: "remote", "within <N> miles of <place>", or plain text

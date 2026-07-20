@@ -187,7 +187,7 @@ def profile_show(
     console.print(
         f"\n[dim]Search targets: {', '.join(profile.search.titles)} | "
         f"visa: {profile.visa.status.value} | "
-        f"remote: {profile.search.remote.value}[/]"
+        f"location prefs: {', '.join(profile.search.location_preference) or 'none'}[/]"
     )
 
 
