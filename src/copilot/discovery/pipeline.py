@@ -49,6 +49,17 @@ def _hits_dealbreaker(discovered: DiscoveredJob, dealbreakers: list[str]) -> boo
     return any(d.strip().lower() in haystack for d in dealbreakers if d.strip())
 
 
+def _below_salary_floor(
+    salary_min: int | None, salary_max: int | None, floor: int | None
+) -> bool:
+    """True only when the salary is known and its best case is under the
+    floor. Unknown salary never trips this (D10)."""
+    if floor is None:
+        return False
+    best_known = salary_max or salary_min
+    return best_known is not None and best_known < floor
+
+
 def _get_or_create_company(session: Session, discovered: DiscoveredJob) -> Company:
     company = session.scalar(select(Company).where(Company.name == discovered.company_name))
     if company is None:
@@ -134,7 +145,9 @@ def run_discovery(
 
             for discovered in discovered_jobs:
                 summary.found += 1
-                if _hits_dealbreaker(discovered, profile.search.dealbreakers):
+                if _hits_dealbreaker(discovered, profile.search.dealbreakers) or _below_salary_floor(
+                    discovered.salary_min, discovered.salary_max, profile.search.min_salary
+                ):
                     summary.dealbreakers_dropped += 1
                     continue
 
@@ -144,6 +157,35 @@ def run_discovery(
                 else:
                     summary.duplicates += 1
 
+    session.commit()
+    return summary
+
+
+@dataclass
+class PruneSummary:
+    dealbreakers: int = 0
+    below_salary_floor: int = 0
+
+
+def prune_jobs(profile: Profile, session: Session) -> PruneSummary:
+    """Re-apply the profile's hard filters (dealbreakers, salary floor) to
+    jobs already stored, deleting violators. This is how rule changes take
+    effect retroactively without re-calling any discovery API - everything
+    ever discovered is already in the DB, so the DB itself is the cache to
+    re-derive from. Jobs with an application on file are never pruned."""
+    summary = PruneSummary()
+    for job in session.scalars(select(Job)).all():
+        if job.application is not None:
+            continue
+        haystack = f"{job.title}\n{job.jd_text or ''}".lower()
+        if any(
+            d.strip().lower() in haystack for d in profile.search.dealbreakers if d.strip()
+        ):
+            summary.dealbreakers += 1
+            session.delete(job)
+        elif _below_salary_floor(job.salary_min, job.salary_max, profile.search.min_salary):
+            summary.below_salary_floor += 1
+            session.delete(job)
     session.commit()
     return summary
 
@@ -255,7 +297,9 @@ def _poll_board(
             ats_type=company.ats_type,
             ats_slug=company.ats_slug,
         )
-        if _hits_dealbreaker(discovered, profile.search.dealbreakers):
+        if _hits_dealbreaker(discovered, profile.search.dealbreakers) or _below_salary_floor(
+            discovered.salary_min, discovered.salary_max, profile.search.min_salary
+        ):
             continue
         if _upsert_job(session, discovered, company):
             summary.board_jobs_added += 1

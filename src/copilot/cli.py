@@ -264,6 +264,36 @@ def discover() -> None:
     console.print("[dim]Run 'copilot jobs list' to see them.[/]")
 
 
+@jobs_app.command("prune")
+def jobs_prune(
+    yes: bool = typer.Option(False, "--yes", help="Skip the confirmation prompt."),
+) -> None:
+    """Re-apply your current dealbreakers and salary floor to jobs already in
+    the database, deleting violators. No API calls - this reprocesses stored
+    data, so it's how rule changes in profile.yaml take effect retroactively.
+    Jobs you've applied to are never touched."""
+    profile = load_profile()
+
+    from copilot.db import get_engine, get_session
+    from copilot.discovery.pipeline import prune_jobs
+
+    floor = f"${profile.search.min_salary:,}" if profile.search.min_salary else "none"
+    console.print(
+        f"Rules: dealbreakers={profile.search.dealbreakers or 'none'}, salary floor={floor}"
+    )
+    if not yes and not typer.confirm("Delete stored jobs violating these rules?", default=False):
+        console.print("[yellow]Nothing deleted.[/]")
+        return
+
+    with get_session(get_engine()) as session:
+        summary = prune_jobs(profile, session)
+
+    console.print(
+        f"[green]Pruned[/] {summary.dealbreakers} dealbreaker matches, "
+        f"{summary.below_salary_floor} below the salary floor."
+    )
+
+
 @jobs_app.command("list")
 def jobs_list(
     min_salary: int | None = typer.Option(

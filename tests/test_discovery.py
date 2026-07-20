@@ -138,3 +138,64 @@ def test_strip_html_unescapes_greenhouse_content():
     raw = "&lt;div&gt;&lt;p&gt;Build ML systems.&lt;/p&gt;&lt;/div&gt;"
     assert _strip_html(raw) == "Build ML systems."
     assert _strip_html(None) is None
+
+
+def test_below_salary_floor_unknown_never_trips():
+    from copilot.discovery.pipeline import _below_salary_floor
+
+    assert _below_salary_floor(None, 140000, 150000)
+    assert _below_salary_floor(120000, None, 150000)
+    assert not _below_salary_floor(None, None, 150000)  # unknown: kept (D10)
+    assert not _below_salary_floor(None, 150000, 150000)
+    assert not _below_salary_floor(100000, 200000, 150000)  # best case above floor
+    assert not _below_salary_floor(None, 100000, None)  # no floor set
+
+
+def test_prune_jobs_deletes_violators_keeps_applied(tmp_path):
+    from copilot.config import Profile
+    from copilot.db import get_engine, get_session, init_db
+    from copilot.db.models import Application, Company, Job
+    from copilot.discovery.pipeline import prune_jobs
+
+    profile = Profile.model_validate(
+        {
+            "identity": {"full_name": "X", "email": "x@example.com"},
+            "resume_path": "data/resume.pdf",
+            "search": {
+                "titles": ["Engineer"],
+                "min_salary": 150000,
+                "dealbreakers": ["clearance required"],
+            },
+            "visa": {"needs_sponsorship": True, "status": "h1b_transfer"},
+            "email_integration": {"provider": "outlook", "address": "x@hotmail.com"},
+        }
+    )
+    engine = get_engine(tmp_path / "test.db")
+    init_db(engine)
+    with get_session(engine) as session:
+        company = Company(name="Acme")
+        session.add(company)
+        session.flush()
+
+        def job(dedupe, **kw):
+            j = Job(
+                company_id=company.id, title="Engineer", source="adzuna",
+                apply_url="x", dedupe_hash=dedupe, **kw,
+            )
+            session.add(j)
+            return j
+
+        keep = job("a", salary_max=200000)
+        keep_unknown = job("b")
+        low = job("c", salary_max=100000)
+        breaker = job("d", jd_text="Active clearance required for this role")
+        low_but_applied = job("e", salary_max=90000)
+        session.flush()
+        session.add(Application(job_id=low_but_applied.id))
+        session.commit()
+
+        summary = prune_jobs(profile, session)
+        assert summary.below_salary_floor == 1
+        assert summary.dealbreakers == 1
+        remaining = {j.dedupe_hash for j in session.query(Job).all()}
+        assert remaining == {"a", "b", "e"}

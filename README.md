@@ -48,8 +48,10 @@ Re-running `discover` is always safe: postings are deduped by company+title+loca
 Listings come back ordered by your preferences, not just recency. In `profile.yaml`:
 
 - `search.location_preference` - ordered list that *sorts* jobs (never hides them): `remote`, `within 30 miles of <place>` (real distances - jobs are geocoded once and cached), or plain location text
-- `search.min_salary` - floor that *hides* jobs whose known salary is below it; jobs that don't state a salary are always kept
+- `search.min_salary` - hard floor: jobs whose known salary is below it are dropped; jobs that don't state a salary are always kept
 - `search.dealbreakers` - hard drops at discovery time
+
+Changed your rules? `uv run copilot jobs prune` re-applies them to everything already stored - no API calls, since the database holds everything ever discovered. Jobs you've applied to are never pruned.
 
 ## Development
 
