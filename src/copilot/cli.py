@@ -215,15 +215,15 @@ def discover() -> None:
         raise typer.Exit(1)
 
     from copilot.db import get_engine, get_session, init_db
-    from copilot.discovery.pipeline import run_discovery
+    from copilot.discovery.pipeline import resolve_and_poll_ats, run_discovery
 
     engine = get_engine()
     init_db(engine)
 
     titles = ", ".join(profile.search.titles)
     locations = ", ".join(profile.search.locations)
-    with console.status(f"Searching for {titles} in {locations}..."):
-        with get_session(engine) as session:
+    with get_session(engine) as session:
+        with console.status(f"Searching for {titles} in {locations}..."):
             summary = run_discovery(
                 profile,
                 session,
@@ -232,14 +232,27 @@ def discover() -> None:
                 jsearch_api_key=jsearch_api_key,
             )
 
-    console.print(
-        f"[green]Found {summary.found}[/] postings - "
-        f"[green]{summary.added} new[/], "
-        f"[dim]{summary.duplicates} already known[/], "
-        f"[yellow]{summary.dealbreakers_dropped} dropped (dealbreaker)[/]"
-    )
-    for err in summary.errors:
-        console.print(f"[red]Error:[/] {err}")
+        console.print(
+            f"[green]Found {summary.found}[/] postings - "
+            f"[green]{summary.added} new[/], "
+            f"[dim]{summary.duplicates} already known[/], "
+            f"[yellow]{summary.dealbreakers_dropped} dropped (dealbreaker)[/]"
+        )
+        for err in summary.errors:
+            console.print(f"[red]Error:[/] {err}")
+
+        with console.status("Checking companies for public ATS job boards..."):
+            ats = resolve_and_poll_ats(profile, session)
+
+    if ats.companies_probed or ats.boards_polled:
+        console.print(
+            f"[green]ATS boards:[/] probed {ats.companies_probed} new companies, "
+            f"found {ats.boards_found} boards, polled {ats.boards_polled} - "
+            f"[green]{ats.links_upgraded} jobs upgraded to direct links[/], "
+            f"[green]{ats.board_jobs_added} added from boards[/]"
+        )
+    for err in ats.errors:
+        console.print(f"[red]ATS error:[/] {err}")
 
     console.print("[dim]Run 'copilot jobs list' to see them.[/]")
 

@@ -13,11 +13,11 @@ Design principle: assist, never impersonate. No LinkedIn scraping, no auto-submi
 
 ## Status
 
-Phase 0 (foundation) in progress. See `docs/PLAN.md` for the roadmap and `docs/DECISIONS.md` for design decisions.
+Phases 0 (foundation) and 1 (discovery) complete. Next: fit scoring and sponsorship research. See `docs/PLAN.md` for the roadmap, `docs/DECISIONS.md` for design decisions, and `docs/APIS.md` for the external APIs in use.
 
 ## Setup
 
-Requires [uv](https://docs.astral.sh/uv/) and an [Anthropic API key](https://console.anthropic.com/).
+Requires [uv](https://docs.astral.sh/uv/) and an [Anthropic API key](https://console.anthropic.com/). Discovery needs at least one of: [Adzuna](https://developer.adzuna.com/) (`ADZUNA_APP_ID` + `ADZUNA_APP_KEY`) or [JSearch on RapidAPI](https://rapidapi.com/letscrape-6bRBa3QguO5/api/jsearch) (`JSEARCH_API_KEY`), both with free tiers.
 
 ```sh
 uv sync
@@ -30,6 +30,19 @@ uv run copilot profile suggest-titles  # optional: proposes search.titles from y
 # your preferences, not facts the resume states
 uv run copilot profile show  # Claude extracts and displays your structured profile
 ```
+
+## Discovering jobs
+
+```sh
+uv run copilot discover      # searches Adzuna + JSearch for every title/location in your
+                             # profile, then probes each company for a public Greenhouse/
+                             # Lever/Ashby board - matched jobs get direct employer apply
+                             # links and full JD text instead of aggregator redirects
+uv run copilot jobs list                     # newest first
+uv run copilot jobs list --min-salary 150000 --location remote
+```
+
+Re-running `discover` is always safe: postings are deduped by company+title+location, so nothing is stored twice.
 
 ## Development
 

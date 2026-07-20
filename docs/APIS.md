@@ -30,10 +30,18 @@ Every third-party service this project talks to, what it's for, how it's authent
 - **Known limitation (confirmed live, 2026-07-19):** `redirect_url` (the apply link) always proxies through `adzuna.com/land/ad/...` or `adzuna.com/details/...` - never the employer's own posting or ATS URL. This means Adzuna results give zero signal for ATS auto-detection (see "ATS auto-watchlist" note below). `description` is also a truncated snippet, not the full JD.
 - **Status:** integrated, Phase 1 discovery.
 
+### Greenhouse / Lever / Ashby job-board APIs
+- **Used for:** resolving discovered companies to their public ATS job board (`discovery/ats_resolver.py`) and polling those boards for direct employer apply links + full JD text (`discovery/ats_boards.py`). This replaced the original apply-URL-sniffing plan, which had no signal - aggregator apply links always proxy through the aggregator (see docs/DECISIONS.md D3).
+- **Auth:** none - all three are public and unauthenticated. No known rate limits; usage is modest (a few probe requests per newly discovered company, one poll per watchlisted board per discover run).
+- **Endpoints in use** (field names verified live 2026-07-19):
+  - Greenhouse: `GET boards-api.greenhouse.io/v1/boards/{slug}` (board metadata - echoes the company's display name, used to verify slug guesses) and `GET .../boards/{slug}/jobs?content=true` (postings with `absolute_url`, `location.name`, `first_published`, HTML-escaped `content`).
+  - Lever: `GET api.lever.co/v0/postings/{slug}?mode=json` (postings with `text` = title, `hostedUrl`, `categories.location`, `createdAt` in epoch ms, `descriptionPlain`).
+  - Ashby: `GET api.ashbyhq.com/posting-api/job-board/{slug}` (postings with `title`, `jobUrl`, `location`, `isRemote`, `isListed`, `publishedAt`, `descriptionPlain`).
+- **Slug-collision caveat:** only Greenhouse returns the company name, so only Greenhouse hits can be verified. Loose slug guesses (first word of a multi-word company name) are therefore Greenhouse-only; Lever/Ashby accept full-name slugs only. This is load-bearing: loose Lever probing matched Capital One to an unrelated board named "capital" in live testing.
+
 ## Planned, not yet integrated
 
 - **Microsoft Graph API** - Outlook/Hotmail inbox monitoring and sending (Phase 2 for sending, Phase 4 for monitoring). Auth via MSAL device-code flow, not a static key.
-- **Greenhouse / Lever / Ashby job-board APIs** - public, unauthenticated, per-company. Deferred per docs/DECISIONS.md - only added if Adzuna/JSearch JD quality turns out to need supplementing. **Update (2026-07-19):** the D3 auto-watchlist plan (sniff a discovered job's apply URL for a Greenhouse/Lever/Ashby slug) has essentially no signal from either source in practice - Adzuna's apply link always proxies through `adzuna.com`, and in live sampling zero JSearch results had `job_apply_is_direct: true` or a direct link in `apply_options[]`. The detection code (`discovery/ats.py`) is still in place and free to run - it'll fire correctly if a direct link ever comes through - but ATS pollers can no longer be assumed to "just start populating themselves" the way D3 originally envisioned. If ATS coverage matters later, it likely needs an explicit seed (e.g. a company name → slug lookup) rather than URL sniffing alone.
 - **USCIS H-1B Employer Data Hub / DOL LCA disclosure data** - downloadable datasets, not a live rate-limited API, for the sponsorship-research feature (Phase 2).
 
 ## Planned tooling

@@ -98,3 +98,43 @@ def test_hits_dealbreaker_matches_title_or_jd_text():
     )
     assert _hits_dealbreaker(job, ["staffing agency"])
     assert not _hits_dealbreaker(job, ["clearance required"])
+
+
+def test_slug_candidates_strip_legal_suffixes():
+    from copilot.discovery.ats_resolver import slug_candidates
+
+    assert "accenturefederalservices" in slug_candidates("Accenture Federal Services")
+    assert slug_candidates("Blend") == ["blend"]
+
+
+def test_slug_candidates_full_name_only():
+    from copilot.discovery.ats_resolver import slug_candidates
+
+    candidates = slug_candidates("Palm Venture Studios")
+    assert candidates[0] == "palmventurestudios"
+    # The risky first-word guess is not part of the trusted candidate set
+    assert "palm" not in candidates
+
+
+def test_loose_slug_candidates_first_word_fallback():
+    from copilot.discovery.ats_resolver import loose_slug_candidates
+
+    assert loose_slug_candidates("Inabia Solutions and Consulting, Inc.") == ["inabia"]
+    # Single-word names have no separate fallback
+    assert loose_slug_candidates("Blend") == []
+
+
+def test_titles_match_normalized_containment():
+    from copilot.discovery.pipeline import _titles_match
+
+    assert _titles_match("Machine Learning Engineer", "Senior Machine Learning Engineer")
+    assert _titles_match("AI Engineer", "ai engineer")
+    assert not _titles_match("Machine Learning Engineer", "Account Executive")
+
+
+def test_strip_html_unescapes_greenhouse_content():
+    from copilot.discovery.ats_boards import _strip_html
+
+    raw = "&lt;div&gt;&lt;p&gt;Build ML systems.&lt;/p&gt;&lt;/div&gt;"
+    assert _strip_html(raw) == "Build ML systems."
+    assert _strip_html(None) is None

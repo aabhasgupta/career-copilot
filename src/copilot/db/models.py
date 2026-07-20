@@ -28,6 +28,8 @@ class ATSType(str, enum.Enum):
     greenhouse = "greenhouse"
     lever = "lever"
     ashby = "ashby"
+    # none = probed, no public board found; unknown = not yet probed
+    none = "none"
     unknown = "unknown"
 
 
