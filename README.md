@@ -13,7 +13,7 @@ Design principle: assist, never impersonate. No LinkedIn scraping, no auto-submi
 
 ## Status
 
-Phases 0 (foundation) and 1 (discovery) complete. Next: fit scoring and sponsorship research. See `docs/PLAN.md` for the roadmap, `docs/DECISIONS.md` for design decisions, and `docs/APIS.md` for the external APIs in use.
+Phases 0 (foundation) and 1 (discovery) complete. Phase 2's fit scoring and sponsorship research are done; email sending is next. See `docs/PLAN.md` for the roadmap, `docs/DECISIONS.md` for design decisions, and `docs/APIS.md` for the external APIs in use.
 
 ## Setup
 
@@ -59,6 +59,34 @@ Changed your rules? `uv run copilot jobs prune` re-applies them to everything al
 Prefer forms over YAML? `uv run copilot dashboard` serves a local web page
 (localhost only) for editing all of the above, with validation before every
 save and the file's comments preserved.
+
+## Scoring fit
+
+```sh
+uv run copilot score              # scores up to 25 unscored jobs against your resume
+uv run copilot score --limit 50   # keep going through the backlog
+uv run copilot jobs list --min-fit 70   # unscored jobs are always kept, never treated as low fit
+uv run copilot jobs show 42       # full breakdown: reasoning + the 5 dimension scores behind fit_score
+```
+
+Each job gets a 0-100 `fit_score` with written reasoning, plus five independent dimension
+scores (skill match, experience level, domain fit, location fit, visa feasibility) - `jobs list`
+only shows the overall score to stay readable; the breakdown lives in `jobs show`. `fit_score`
+is the model's own holistic judgment, not an average of the five dimensions. Scoring is batched
+(several jobs share one Claude call, since the resume is common context) and only ever touches
+unscored jobs, so re-running is always cheap and safe.
+
+## Sponsorship research
+
+```sh
+uv run copilot sponsorship-sync             # match your companies against public H1B filing data
+uv run copilot sponsorship-sync --refresh   # force re-download of the USCIS data
+```
+
+Matches companies by name against the public USCIS H-1B Employer Data Hub - free, no API key,
+zero LLM calls. This is historical, company-wide evidence (a company can change policy, or
+sponsor for some roles and not others), so it's deliberately never folded into `fit_score` -
+see it as separate context in `copilot jobs show <id>`.
 
 ## Development
 

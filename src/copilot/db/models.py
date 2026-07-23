@@ -117,6 +117,14 @@ class Job(Base):
     dedupe_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     fit_score: Mapped[float | None] = mapped_column(Float)
     fit_reasoning: Mapped[str | None] = mapped_column(Text)
+    # Per-dimension breakdown behind fit_score (docs/DECISIONS.md D17): not shown
+    # in `jobs list` to avoid clutter, only in `jobs show <id>`. The model still
+    # produces fit_score as its own holistic judgment, not an average of these.
+    skill_match_score: Mapped[float | None] = mapped_column(Float)
+    experience_level_score: Mapped[float | None] = mapped_column(Float)
+    domain_fit_score: Mapped[float | None] = mapped_column(Float)
+    location_fit_score: Mapped[float | None] = mapped_column(Float)
+    visa_feasibility_score: Mapped[float | None] = mapped_column(Float)
     visa_signal: Mapped[VisaSignal] = mapped_column(
         Enum(VisaSignal), default=VisaSignal.unknown
     )

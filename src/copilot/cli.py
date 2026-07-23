@@ -292,6 +292,119 @@ def discover(
 
 
 @app.command()
+def score(
+    limit: int = typer.Option(25, "--limit", help="Max unscored jobs to score this run."),
+    batch_size: int = typer.Option(8, "--batch-size", help="Jobs per Claude call."),
+) -> None:
+    """Score unscored jobs (fit_score is null) against your resume: a 0-100 fit
+    score with written reasoning, plus each JD's explicit visa/sponsorship signal.
+    Costs one batched Claude call per --batch-size jobs. Safe to re-run - already
+    -scored jobs are skipped, so this only ever scores what's new."""
+    profile_path = Path(PROFILE_FILENAME)
+    if not profile_path.exists():
+        console.print(f"[red]{PROFILE_FILENAME} not found.[/] Run 'copilot init' first.")
+        raise typer.Exit(1)
+
+    profile = load_profile()
+
+    from sqlalchemy import select
+
+    from copilot.db import get_engine, get_session
+    from copilot.db.models import Job
+    from copilot.resume import extract_resume_profile
+    from copilot.scoring.rubric import JobToScore, score_jobs
+
+    with console.status("Reading resume..."):
+        resume = extract_resume_profile(profile)
+
+    engine = get_engine()
+    with get_session(engine) as session:
+        stmt = (
+            select(Job)
+            .where(Job.fit_score.is_(None))
+            .order_by(Job.created_at.desc())
+            .limit(limit)
+        )
+        jobs = session.scalars(stmt).all()
+
+        if not jobs:
+            console.print(
+                "[yellow]Nothing to score.[/] All discovered jobs already have a fit score."
+            )
+            return
+
+        to_score = [
+            JobToScore(
+                id=j.id,
+                title=j.title,
+                company=j.company.name if j.company else "?",
+                location=j.location,
+                remote=j.remote,
+                salary_min=j.salary_min,
+                salary_max=j.salary_max,
+                jd_text=j.jd_text,
+            )
+            for j in jobs
+        ]
+
+        with console.status(f"Scoring {len(to_score)} jobs against your resume..."):
+            scores = score_jobs(profile, resume, to_score, batch_size=batch_size)
+
+        by_id = {j.id: j for j in jobs}
+        for job_id, result in scores.items():
+            job = by_id[job_id]
+            job.fit_score = result.fit_score
+            job.fit_reasoning = result.reasoning
+            job.visa_signal = result.visa_signal
+            job.skill_match_score = result.skill_match_score
+            job.experience_level_score = result.experience_level_score
+            job.domain_fit_score = result.domain_fit_score
+            job.location_fit_score = result.location_fit_score
+            job.visa_feasibility_score = result.visa_feasibility_score
+        session.commit()
+
+    missing = len(to_score) - len(scores)
+    console.print(f"[green]Scored {len(scores)}[/] jobs.")
+    if missing:
+        console.print(
+            f"[yellow]{missing} jobs got no score back[/] - left unscored, "
+            "re-run 'copilot score' to retry them."
+        )
+    console.print("[dim]Run 'copilot jobs list' to see them ranked by fit.[/]")
+
+
+@app.command("sponsorship-sync")
+def sponsorship_sync(
+    refresh: bool = typer.Option(
+        False, "--refresh", help="Re-download the USCIS data even if already cached."
+    ),
+) -> None:
+    """Match your companies against the public USCIS H-1B Employer Data Hub to
+    populate each company's H1B filing history. Deterministic, no LLM calls -
+    safe to re-run any time new companies are discovered. This is historical,
+    company-wide evidence (not a live policy) and is never folded into
+    fit_score - see it via 'copilot jobs show <id>'."""
+    from copilot.db import get_engine, get_session
+    from copilot.scoring.sponsorship import FISCAL_YEAR, download_data, sync_sponsorship_data
+
+    with console.status("Downloading USCIS H-1B Employer Data Hub (cached after first run)..."):
+        cache_path = download_data(force=refresh)
+
+    with get_session(get_engine()) as session:
+        with console.status("Matching companies against filing data..."):
+            summary = sync_sponsorship_data(session, cache_path=cache_path)
+
+    console.print(
+        f"[green]Matched {summary.matched}[/] of {summary.companies_checked} companies "
+        f"against FY{FISCAL_YEAR} H1B filing data."
+    )
+    console.print(
+        "[dim]Historical, company-wide evidence, not a live policy - see "
+        "'copilot jobs show <id>' for a company's filing history alongside its fit score.[/]"
+    )
+
+
+@app.command()
 def dashboard(
     port: int = typer.Option(8765, "--port", help="Port to serve on."),
 ) -> None:
@@ -345,15 +458,20 @@ def jobs_list(
     min_salary: int | None = typer.Option(
         None, "--min-salary", help="Salary floor; defaults to search.min_salary in profile.yaml."
     ),
+    min_fit: int | None = typer.Option(
+        None, "--min-fit", help="Fit-score floor (0-100). Unscored jobs are always kept."
+    ),
     location: str | None = typer.Option(None, "--location", help="Substring match on location."),
     limit: int = typer.Option(25, "--limit", help="Max rows to show."),
     show_all: bool = typer.Option(
         False, "--all", help="Ignore the profile salary floor and show everything."
     ),
 ) -> None:
-    """List discovered jobs, best first: ordered by your location_preference,
-    then salary, then recency. Jobs with unknown salary are always kept -
-    the floor only drops jobs whose known salary is below it."""
+    """List discovered jobs, best first: scored jobs rank by fit_score (highest
+    first), with your location_preference etc. as a tiebreaker; unscored jobs
+    follow, ranked the old way, until 'copilot score' reaches them. Jobs with
+    unknown salary/fit are always kept - floors only drop known-and-below
+    values."""
     from sqlalchemy import select
 
     from copilot.db import get_engine, get_session
@@ -387,20 +505,29 @@ def jobs_list(
             # Drop only when the posting's best case is known to be below the
             # floor; unknown salary is kept, never dropped.
             stmt = stmt.where((Job.salary_max.is_(None)) | (Job.salary_max >= floor))
+        if min_fit is not None:
+            # Same "unknown, never dropped" rule as the salary floor: a job
+            # simply not scored yet is not the same as a job that scored low.
+            stmt = stmt.where((Job.fit_score.is_(None)) | (Job.fit_score >= min_fit))
         jobs = session.scalars(stmt).all()
 
         if not jobs:
             console.print("[yellow]No jobs found.[/] Run 'copilot discover' first.")
             return
 
-        # Staffing-agency jobs always sort after direct employers (dominant
-        # rule, not blended - a remote staffing role must not outrank a
-        # non-remote direct one). Within each group: equal-weight blend of the
-        # two preference dimensions, ties broken by location tier, then
-        # salary, then recency.
+        # Scored jobs rank above unscored ones and sort by fit_score
+        # descending - the model's holistic judgment is the strongest signal
+        # available once it exists. Unscored jobs (fit_score is None) all tie
+        # on the first two keys and fall through to the pre-Phase-2 ranking:
+        # staffing-agency jobs sort after direct employers (dominant rule, not
+        # blended - a remote staffing role must not outrank a non-remote
+        # direct one), then the location/industry/company preference blend,
+        # then salary, then recency.
         ranked = sorted(
             jobs,
             key=lambda j: (
+                j.fit_score is None,
+                -(j.fit_score or 0),
                 ind_tier(j) > len(industries),
                 preference_tier(j, rules)
                 + min(ind_tier(j), len(industries))
@@ -413,6 +540,7 @@ def jobs_list(
 
         table = Table(title=f"Jobs ({len(ranked)} of {len(jobs)} shown)")
         table.add_column("ID", width=4)
+        table.add_column("Fit")
         if rules:
             table.add_column("Pref")
         if industries or downrank_staffing:
@@ -430,7 +558,7 @@ def jobs_list(
                 salary = f"${lo}-${hi}"
             else:
                 salary = "unknown"
-            row = [str(job.id)]
+            row = [str(job.id), f"{job.fit_score:.0f}" if job.fit_score is not None else "-"]
             if rules:
                 row.append(tier_label(preference_tier(job, rules), rules))
             if industries or downrank_staffing:
@@ -443,6 +571,79 @@ def jobs_list(
                 f"[dim]Salary floor ${floor:,} applied (unknown-salary jobs kept) - "
                 "--all to see everything.[/]"
             )
+        if min_fit is not None:
+            console.print(
+                f"[dim]Fit floor {min_fit} applied (unscored jobs kept) - "
+                "run 'copilot score' to reduce the unscored pool.[/]"
+            )
+
+
+@jobs_app.command("show")
+def jobs_show(job_id: int) -> None:
+    """Full detail for one job: the written fit reasoning and the five
+    per-dimension scores behind the overall fit_score shown in 'jobs list'."""
+    from sqlalchemy import select
+
+    from copilot.db import get_engine, get_session
+    from copilot.db.models import Job
+
+    with get_session(get_engine()) as session:
+        job = session.scalar(select(Job).where(Job.id == job_id))
+        if job is None:
+            console.print(f"[red]No job with id {job_id}.[/]")
+            raise typer.Exit(1)
+
+        company = job.company.name if job.company else "?"
+        salary = "unknown"
+        if job.salary_min or job.salary_max:
+            lo = f"{job.salary_min:,}" if job.salary_min else "?"
+            hi = f"{job.salary_max:,}" if job.salary_max else "?"
+            salary = f"${lo}-${hi}"
+
+        console.print(
+            Panel(
+                f"[bold]{job.title}[/] at [bold]{company}[/]\n"
+                f"{job.location or 'unknown location'}"
+                f"{' (remote)' if job.remote else ''} | {salary} | via {job.source}\n"
+                f"{job.apply_url}",
+                title=f"Job #{job.id}",
+            )
+        )
+
+        if job.fit_score is None:
+            console.print("[yellow]Not scored yet.[/] Run 'copilot score' to score it.")
+            return
+
+        console.print(f"\n[bold]Fit score: {job.fit_score:.0f}/100[/]")
+        console.print(job.fit_reasoning or "[dim](no reasoning stored)[/]")
+
+        table = Table(title="Dimension breakdown", show_header=True)
+        table.add_column("Dimension")
+        table.add_column("Score", justify="right")
+        dimensions = [
+            ("Skill match", job.skill_match_score),
+            ("Experience level", job.experience_level_score),
+            ("Domain fit", job.domain_fit_score),
+            ("Location fit", job.location_fit_score),
+            ("Visa feasibility", job.visa_feasibility_score),
+        ]
+        for name, value in dimensions:
+            table.add_row(name, f"{value:.0f}/100" if value is not None else "-")
+        console.print(table)
+        console.print(f"[dim]Visa signal from JD: {job.visa_signal.value}[/]")
+
+        if company != "?" and job.company:
+            sponsorship = job.company.sponsorship_status.value
+            if sponsorship != "unknown" or job.company.sponsorship_evidence:
+                console.print(
+                    f"[dim]Company sponsorship: {sponsorship}"
+                    + (
+                        f" - {job.company.sponsorship_evidence}"
+                        if job.company.sponsorship_evidence
+                        else ""
+                    )
+                    + "[/]"
+                )
 
 
 if __name__ == "__main__":

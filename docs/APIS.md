@@ -5,7 +5,8 @@ Every third-party service this project talks to, what it's for, how it's authent
 ## In use
 
 ### Anthropic API
-- **Used for:** resume extraction (structured outputs), title suggestions (web search tool), and every later agentic step - fit scoring (Phase 2), tailoring (Phase 3), email classification (Phase 4)
+- **Used for:** resume extraction (structured outputs), title suggestions (web search tool), industry classification, dealbreaker compilation, fit scoring (`scoring/rubric.py` - Phase 2), and every later agentic step - tailoring (Phase 3), email classification (Phase 4)
+- **Fit scoring cost shape:** one batched call per `batch_size` (default 8) unscored jobs, not one call per job - the resume is shared context across the batch. Each call returns five per-dimension 0-100 scores plus a holistic `fit_score` and reasoning per job (docs/DECISIONS.md D17), and the job's `visa_signal` extracted from the same JD text read for scoring (no separate pass).
 - **Auth:** `ANTHROPIC_API_KEY` in `.env`
 - **Model:** `claude-sonnet-5` (set in `profile.yaml` under `llm.model`)
 - **Billing:** pay-as-you-go, no fixed monthly quota - cost scales with tokens used
@@ -61,10 +62,18 @@ Every third-party service this project talks to, what it's for, how it's authent
 - **Endpoint:** `GET nominatim.openstreetmap.org/search?q=<place>&format=json&limit=1&countrycodes=us`
 - **Caching (load-bearing):** every result - including failed lookups - is cached forever in `data/geocode_cache.json`, so each distinct place name costs exactly one request ever. The backfill runs inside `copilot discover`; a first run over ~100 jobs took about a minute, subsequent runs are near-instant.
 
+### USCIS H-1B Employer Data Hub
+- **Used for:** company-level H1B sponsorship evidence (`scoring/sponsorship.py`, `copilot sponsorship-sync`) - historical filing counts as transfer-likelihood evidence, surfaced separately from `fit_score`, never blended into it (docs/DECISIONS.md D18).
+- **Auth:** none - it's a public downloadable CSV, not a rate-limited API. Requires a normal browser `User-Agent` header though; non-browser requests get blocked (confirmed live 2026-07-19).
+- **Endpoint:** `GET uscis.gov/sites/default/files/document/data/h1b_datahubexport-{year}.csv`
+- **Latest available year (confirmed live 2026-07-19 and again 2026-07-23):** FY2023 - FY2024 and FY2025 URLs both 404. Update `FISCAL_YEAR` in `scoring/sponsorship.py` if USCIS publishes a newer export.
+- **Schema:** `Fiscal Year, Employer, Initial Approval, Initial Denial, Continuing Approval, Continuing Denial, NAICS, Tax ID, State, City, ZIP`. Multiple rows per employer (different worksites/Tax IDs) are aggregated by normalized employer name before matching.
+- **Caching:** downloaded once to `data/h1b_data_hub_fy2023.csv` (gitignored); `copilot sponsorship-sync --refresh` forces a re-download.
+- **Matching caveat (load-bearing, found live 2026-07-23):** filer names are legal entity names ("AMAZON COM SERVICES LLC") that often differ from the brand name a job posting uses ("Amazon"). Matching is exact-after-normalization first, then a prefix match restricted to distinctive names (2+ words, or 6+ characters as a single word) - short acronym brand names (e.g. "EXL", "CGI") that differ from their legal filer name will often go unmatched by design, favoring precision over recall (same lesson as the Lever slug false-positive in D3).
+
 ## Planned, not yet integrated
 
 - **Microsoft Graph API** - Outlook/Hotmail inbox monitoring and sending (Phase 2 for sending, Phase 4 for monitoring). Auth via MSAL device-code flow, not a static key.
-- **USCIS H-1B Employer Data Hub / DOL LCA disclosure data** - downloadable datasets, not a live rate-limited API, for the sponsorship-research feature (Phase 2).
 
 ## Planned tooling
 
