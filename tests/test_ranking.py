@@ -129,3 +129,25 @@ def test_company_tier_whole_word_matching():
     assert company_tier(stripes_job, prefs) == 2  # no false positive
     assert company_tier(jpmc_job, prefs) == 1
     assert company_tier(stripe_job, []) == 0  # empty prefs: everyone tier 0
+
+
+def test_rank_jobs_scored_before_unscored_by_descending_fit(tmp_path: Path):
+    from copilot.config import Profile
+    from copilot.ranking import rank_jobs
+
+    profile = Profile.model_validate(
+        {
+            "identity": {"full_name": "X", "email": "x@example.com"},
+            "resume_path": "data/resume.pdf",
+            "search": {"titles": ["Engineer"]},
+            "visa": {"needs_sponsorship": True, "status": "h1b_transfer"},
+            "email_integration": {"provider": "outlook", "address": "x@hotmail.com"},
+        }
+    )
+    high = _job(fit_score=80)
+    low = _job(fit_score=20)
+    # Even a very attractive unscored job (huge salary) must not outrank a
+    # scored job - "not yet scored" is not the same as "low fit".
+    unscored = _job(fit_score=None, salary_max=500000)
+    ranked = rank_jobs([low, unscored, high], profile, _offline_geocoder(tmp_path))
+    assert ranked == [high, low, unscored]

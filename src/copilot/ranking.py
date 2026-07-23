@@ -17,6 +17,7 @@ import math
 import re
 from dataclasses import dataclass
 
+from copilot.config import Profile
 from copilot.db.models import Job
 from copilot.geocode import Geocoder
 
@@ -142,3 +143,33 @@ def industry_label(tier: int, industry_preference: list[str]) -> str:
     if tier == len(industry_preference):
         return "-"
     return "staffing↓"
+
+
+def rank_jobs(jobs: list[Job], profile: Profile, geocoder: Geocoder) -> list[Job]:
+    """The single ranking used everywhere jobs are listed (CLI and dashboard),
+    so the two never drift apart. Scored jobs rank first, by fit_score
+    descending - the model's holistic judgment is the strongest signal once it
+    exists. Unscored jobs (fit_score is None) all tie on those first two keys
+    and fall back to the pre-Phase-2 ranking: staffing-agency jobs sort after
+    direct employers (dominant rule, not blended), then the location/industry/
+    company preference blend, then salary, then recency."""
+    rules = build_rules(profile.search.location_preference, geocoder)
+    industries = profile.search.industry_preference
+    companies = profile.search.company_preference
+    downrank_staffing = profile.search.deprioritize_staffing
+
+    def ind_tier(j: Job) -> int:
+        return industry_tier(j, industries, downrank_staffing)
+
+    return sorted(
+        jobs,
+        key=lambda j: (
+            j.fit_score is None,
+            -(j.fit_score or 0),
+            ind_tier(j) > len(industries),
+            preference_tier(j, rules) + min(ind_tier(j), len(industries)) + company_tier(j, companies),
+            preference_tier(j, rules),
+            -(j.salary_max or j.salary_min or 0),
+            -(j.created_at.timestamp() if j.created_at else 0),
+        ),
+    )

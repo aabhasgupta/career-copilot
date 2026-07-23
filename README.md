@@ -58,7 +58,11 @@ Changed your rules? `uv run copilot jobs prune` re-applies them to everything al
 
 Prefer forms over YAML? `uv run copilot dashboard` serves a local web page
 (localhost only) for editing all of the above, with validation before every
-save and the file's comments preserved.
+save and the file's comments preserved. The same dashboard also has a **Jobs**
+tab - a browsable, filterable table of every job (best fit first) with a
+click-through detail view for the full fit breakdown and sponsorship evidence,
+so you don't have to piece it together one `jobs show <id>` at a time. It's
+read-only for now (marking applied / tracking is Phase 3).
 
 ## Scoring fit
 

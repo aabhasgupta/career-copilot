@@ -479,18 +479,18 @@ def jobs_list(
     from copilot.geocode import Geocoder
     from copilot.ranking import (
         build_rules,
-        company_tier,
         industry_label,
         industry_tier,
         preference_tier,
+        rank_jobs,
         tier_label,
     )
 
     profile = load_profile()
     floor = None if show_all else (min_salary if min_salary is not None else profile.search.min_salary)
-    rules = build_rules(profile.search.location_preference, Geocoder())
+    geocoder = Geocoder()
+    rules = build_rules(profile.search.location_preference, geocoder)
     industries = profile.search.industry_preference
-    companies = profile.search.company_preference
     downrank_staffing = profile.search.deprioritize_staffing
 
     def ind_tier(j):
@@ -515,28 +515,7 @@ def jobs_list(
             console.print("[yellow]No jobs found.[/] Run 'copilot discover' first.")
             return
 
-        # Scored jobs rank above unscored ones and sort by fit_score
-        # descending - the model's holistic judgment is the strongest signal
-        # available once it exists. Unscored jobs (fit_score is None) all tie
-        # on the first two keys and fall through to the pre-Phase-2 ranking:
-        # staffing-agency jobs sort after direct employers (dominant rule, not
-        # blended - a remote staffing role must not outrank a non-remote
-        # direct one), then the location/industry/company preference blend,
-        # then salary, then recency.
-        ranked = sorted(
-            jobs,
-            key=lambda j: (
-                j.fit_score is None,
-                -(j.fit_score or 0),
-                ind_tier(j) > len(industries),
-                preference_tier(j, rules)
-                + min(ind_tier(j), len(industries))
-                + company_tier(j, companies),
-                preference_tier(j, rules),
-                -(j.salary_max or j.salary_min or 0),
-                -(j.created_at.timestamp() if j.created_at else 0),
-            ),
-        )[:limit]
+        ranked = rank_jobs(jobs, profile, geocoder)[:limit]
 
         table = Table(title=f"Jobs ({len(ranked)} of {len(jobs)} shown)")
         table.add_column("ID", width=4)
