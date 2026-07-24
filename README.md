@@ -13,7 +13,7 @@ Design principle: assist, never impersonate. No LinkedIn scraping, no auto-submi
 
 ## Status
 
-Phases 0 (foundation) and 1 (discovery) complete. Phase 2 - fit scoring, sponsorship research, and email digests - is done and verified live against a real inbox. See `docs/PLAN.md` for the roadmap, `docs/DECISIONS.md` for design decisions, and `docs/APIS.md` for the external APIs in use.
+Phases 0 (foundation) and 1 (discovery) complete. Phase 2 - fit scoring, sponsorship research, and email digests - is done and verified live against a real inbox. Phase 3 - the base application packet and queue/mark-applied tracking - is built and smoke-tested; real-usage verification (actually applying with it) is still pending. See `docs/PLAN.md` for the roadmap, `docs/DECISIONS.md` for design decisions, and `docs/APIS.md` for the external APIs in use.
 
 ## Setup
 
@@ -114,6 +114,26 @@ The digest reports jobs discovered since the last digest was sent (tracked in
 jobs), calling out anything scored 70+ in a table and summarizing the rest as a count - a mailbox
 isn't the place to browse the full list, `copilot jobs list` and the dashboard's Jobs tab are.
 Nothing is sent when there's nothing new since the last send.
+
+## Applying
+
+```sh
+uv run copilot packet base           # (re)generate data/packet_base.md
+uv run copilot jobs queue 42         # declare intent to apply
+uv run copilot jobs mark-applied 42  # record that you actually applied
+```
+
+Career Copilot prepares reusable application content - it never fills out or submits a form
+itself (docs/DECISIONS.md D1, D22). `copilot packet base` writes `data/packet_base.md`: your
+contact details, H1B-transfer work-authorization answers, and a resume summary, all template-filled
+from `profile.yaml` and your resume - the same for every job, so it's generated once and reused,
+not regenerated per posting (D23). Re-run it yourself after editing your resume or profile.yaml;
+it never happens automatically. The dashboard has the same button on the Preferences page.
+
+`jobs queue`/`jobs mark-applied` (also buttons on a job's detail page in the dashboard) just
+record what you did - queuing never gets auto-created, and marking applied never fires until you
+click it. See **[docs/APPLYING.md](docs/APPLYING.md)** for how to actually get the packet's
+content into an application: by hand, or via a free autofill tool like Simplify.
 
 ## Development
 
