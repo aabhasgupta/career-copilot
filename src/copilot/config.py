@@ -54,6 +54,12 @@ class SearchPreferences(BaseModel):
     # or dealbreakers ("no fully onsite jobs" = require it).
     min_salary: int | None = None
     salary_currency: str = "USD"
+    # Postings older than this (per the source's own posted_at, not when we
+    # discovered it) drop out of jobs list/dashboard once they cross the
+    # threshold - a live floor, not a one-time filter at discovery time, since
+    # a job's age keeps increasing whether or not you re-run discover. Jobs
+    # with unknown posted_at are always kept (D10: unknown, never dropped).
+    max_posting_age_days: int | None = 30
     dealbreakers: list[str] = Field(default_factory=list)
     # Ordered, most preferred first. Reorders listings, never drops them.
     # Entries: "remote", "within <N> miles of <place>", or plain text matched

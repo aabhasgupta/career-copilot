@@ -18,6 +18,7 @@ Design constraints:
 from __future__ import annotations
 
 import html
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import yaml as pyyaml
@@ -28,6 +29,7 @@ from sqlalchemy import select
 from copilot.config import Profile
 from copilot.db import get_engine, get_session
 from copilot.db.models import Job
+from copilot.formatting import format_posted, format_salary
 from copilot.geocode import Geocoder
 from copilot.industry import Industry
 from copilot.profile_fill import update_search_preferences
@@ -241,14 +243,6 @@ def _visa_cell(job: Job) -> str:
     return '<span class="visa none">-</span>'
 
 
-def _salary_text(job: Job) -> str:
-    if not (job.salary_min or job.salary_max):
-        return "unknown"
-    lo = f"{job.salary_min:,}" if job.salary_min else "?"
-    hi = f"{job.salary_max:,}" if job.salary_max else "?"
-    return f"${lo}-${hi}"
-
-
 def _job_row(job: Job) -> str:
     company = html.escape(job.company.name) if job.company else "?"
     title = html.escape(job.title)
@@ -259,34 +253,36 @@ def _job_row(job: Job) -> str:
 <td><a href="/jobs/{job.id}">{title}</a></td>
 <td>{company}</td>
 <td>{location}</td>
-<td>{_salary_text(job)}</td>
+<td>{format_salary(job)}</td>
+<td>{format_posted(job)}</td>
 <td>{_visa_cell(job)}</td>
 <td><a href="{apply_url}" target="_blank" rel="noopener">Apply &rarr;</a></td>
 </tr>"""
 
 
 def _jobs_list_body(
-    jobs: list[Job], total: int, min_fit: str, location: str
+    jobs: list[Job], total: int, min_fit: str, location: str, max_age: str
 ) -> str:
     rows = "".join(_job_row(j) for j in jobs) or (
-        '<tr><td colspan="7" class="sub">No jobs match these filters.</td></tr>'
+        '<tr><td colspan="8" class="sub">No jobs match these filters.</td></tr>'
     )
-    clear = '<a class="clear" href="/jobs">Clear filters</a>' if (min_fit or location) else ""
+    clear = '<a class="clear" href="/jobs">Reset filters</a>' if (min_fit or location) else ""
     return f"""<div class="card">
 <h2>Jobs</h2>
-<p class="sub">{len(jobs)} of {total} shown, best fit first. Unscored jobs are
+<p class="sub">{len(jobs)} of {total} shown, most recent and best fit first. Unscored jobs are
 never treated as low fit - they just haven't run through <code>copilot score</code>
 yet. Click a title for the full fit and sponsorship breakdown.</p>
 <form method="get" action="/jobs" class="filterbar">
   <input type="number" name="min_fit" placeholder="Min fit" value="{html.escape(min_fit)}">
   <input type="text" name="location" placeholder="Location contains..." value="{html.escape(location)}">
+  <input type="number" name="max_age" placeholder="Max age (days)" value="{html.escape(max_age)}">
   <button type="submit">Filter</button>
   {clear}
 </form>
 <div class="tablewrap">
 <table class="jobs">
 <thead><tr><th>Fit</th><th>Title</th><th>Company</th><th>Location</th>
-<th>Salary</th><th>Visa</th><th></th></tr></thead>
+<th>Salary</th><th>Posted</th><th>Visa</th><th></th></tr></thead>
 <tbody>{rows}</tbody>
 </table>
 </div>
@@ -317,7 +313,7 @@ def _job_detail_body(job: Job) -> str:
     header_card = f"""<div class="card">
 <h2>{title}</h2>
 <p class="sub">{company} &middot; {location}{' (remote)' if job.remote else ''} &middot;
-{_salary_text(job)} &middot; via {job.source}</p>
+{format_salary(job)} &middot; posted {format_posted(job)} &middot; via {job.source}</p>
 <p><a href="{apply_url}" target="_blank" rel="noopener">Open application &rarr;</a></p>
 </div>"""
 
@@ -422,10 +418,23 @@ def create_app(profile_path: Path = Path("profile.yaml"), db_path: Path | None =
         return RedirectResponse("/saved", status_code=303)
 
     @app.get("/jobs", response_class=HTMLResponse)
-    def jobs_list(min_fit: str = "", location: str = "", limit: int = 50) -> str:
+    def jobs_list(
+        min_fit: str = "", location: str = "", max_age: str | None = None, limit: int = 50
+    ) -> str:
         with open(profile_path) as f:
             raw = pyyaml.safe_load(f)
         profile = Profile.model_validate(raw)
+
+        # max_age distinguishes "not in the URL at all" (fresh /jobs visit -
+        # apply the profile default) from "submitted blank" (user cleared the
+        # field on purpose - no floor), unlike min_fit/location which have no
+        # profile-level default to fall back to.
+        if max_age is None:
+            age_ceiling = profile.search.max_posting_age_days
+        elif max_age.strip() == "":
+            age_ceiling = None
+        else:
+            age_ceiling = int(max_age)
 
         engine = get_engine(db_path)
         with get_session(engine) as session:
@@ -435,10 +444,14 @@ def create_app(profile_path: Path = Path("profile.yaml"), db_path: Path | None =
             if min_fit.strip():
                 floor = int(min_fit)
                 stmt = stmt.where((Job.fit_score.is_(None)) | (Job.fit_score >= floor))
+            if age_ceiling is not None:
+                cutoff = datetime.now(timezone.utc) - timedelta(days=age_ceiling)
+                stmt = stmt.where((Job.posted_at.is_(None)) | (Job.posted_at >= cutoff))
             jobs = session.scalars(stmt).all()
             total = len(jobs)
             ranked = rank_jobs(jobs, profile, Geocoder())[:limit]
-            body = _jobs_list_body(ranked, total, min_fit, location)
+            max_age_value = str(age_ceiling) if age_ceiling is not None else ""
+            body = _jobs_list_body(ranked, total, min_fit, location, max_age_value)
         return _shell("/jobs", body)
 
     @app.get("/jobs/{job_id}", response_class=HTMLResponse)

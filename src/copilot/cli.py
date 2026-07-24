@@ -19,8 +19,10 @@ load_dotenv()
 app = typer.Typer(help="Job-search copilot. You always click submit.")
 profile_app = typer.Typer(help="Your profile and resume.")
 jobs_app = typer.Typer(help="Discovered jobs.")
+email_app = typer.Typer(help="Email login and sending (Microsoft Graph).")
 app.add_typer(profile_app, name="profile")
 app.add_typer(jobs_app, name="jobs")
+app.add_typer(email_app, name="email")
 
 console = Console()
 
@@ -404,6 +406,109 @@ def sponsorship_sync(
     )
 
 
+@email_app.command("login")
+def email_login() -> None:
+    """One-time interactive Microsoft sign-in (device-code flow): prints a
+    URL and a short code, waits for you to enter it in a browser. The
+    resulting token is cached in data/email_token.json and silently
+    refreshed after that - you shouldn't need to run this often."""
+    import os
+
+    client_id = os.environ.get("AZURE_CLIENT_ID")
+    if not client_id:
+        console.print(
+            "[red]AZURE_CLIENT_ID not set in .env.[/] See README for the Azure app "
+            "registration steps."
+        )
+        raise typer.Exit(1)
+
+    from copilot.email_agent.outlook import login
+
+    try:
+        login(client_id, on_prompt=lambda msg: console.print(f"[bold]{msg}[/]"))
+    except Exception as exc:  # noqa: BLE001 - shown to the user directly
+        console.print(f"[red]Login failed:[/] {exc}")
+        raise typer.Exit(1) from exc
+
+    console.print("[green]Signed in.[/] Run 'copilot email test' to confirm sending works.")
+
+
+@email_app.command("test")
+def email_test() -> None:
+    """Send a one-off test email to your configured address, to verify Graph
+    auth and sending both actually work before relying on the daily digest."""
+    profile_path = Path(PROFILE_FILENAME)
+    if not profile_path.exists():
+        console.print(f"[red]{PROFILE_FILENAME} not found.[/] Run 'copilot init' first.")
+        raise typer.Exit(1)
+
+    profile = load_profile()
+
+    from copilot.email_agent.provider import get_provider
+
+    try:
+        provider = get_provider(profile)
+        provider.send_mail(
+            to=profile.email_integration.address,
+            subject="Career Copilot - test email",
+            body_html="<p>If you're reading this, Graph auth and sending both work.</p>",
+        )
+    except Exception as exc:  # noqa: BLE001 - shown to the user directly
+        console.print(f"[red]Send failed:[/] {exc}")
+        raise typer.Exit(1) from exc
+
+    console.print(f"[green]Sent.[/] Check {profile.email_integration.address}.")
+
+
+@app.command()
+def digest(
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Build and print the digest without sending or marking it sent."
+    ),
+) -> None:
+    """Email a digest of jobs discovered since the last digest, with fit_score
+    80+ jobs called out (apply link, salary, location). Safe to run on any
+    schedule - only marks itself sent after a successful send, and does
+    nothing (no empty email) if there's nothing new."""
+    profile_path = Path(PROFILE_FILENAME)
+    if not profile_path.exists():
+        console.print(f"[red]{PROFILE_FILENAME} not found.[/] Run 'copilot init' first.")
+        raise typer.Exit(1)
+
+    profile = load_profile()
+
+    from copilot.db import get_engine, get_session
+    from copilot.notify.digest import build_digest, mark_digest_sent
+
+    with get_session(get_engine()) as session:
+        result = build_digest(session)
+
+    if result is None:
+        console.print("[yellow]Nothing new since the last digest.[/] No email sent.")
+        return
+
+    console.print(f"{result.subject}")
+    if dry_run:
+        console.print("[dim]--dry-run: not sending, not marking sent.[/]")
+        return
+
+    from copilot.email_agent.provider import get_provider
+
+    try:
+        provider = get_provider(profile)
+        provider.send_mail(
+            to=profile.email_integration.address,
+            subject=result.subject,
+            body_html=result.body_html,
+        )
+    except Exception as exc:  # noqa: BLE001 - shown to the user directly
+        console.print(f"[red]Send failed:[/] {exc}")
+        raise typer.Exit(1) from exc
+
+    mark_digest_sent()
+    console.print(f"[green]Sent.[/] Check {profile.email_integration.address}.")
+
+
 @app.command()
 def dashboard(
     port: int = typer.Option(8765, "--port", help="Port to serve on."),
@@ -461,21 +566,29 @@ def jobs_list(
     min_fit: int | None = typer.Option(
         None, "--min-fit", help="Fit-score floor (0-100). Unscored jobs are always kept."
     ),
+    max_age: int | None = typer.Option(
+        None,
+        "--max-age",
+        help="Posting-age ceiling in days; defaults to search.max_posting_age_days in profile.yaml.",
+    ),
     location: str | None = typer.Option(None, "--location", help="Substring match on location."),
     limit: int = typer.Option(25, "--limit", help="Max rows to show."),
     show_all: bool = typer.Option(
-        False, "--all", help="Ignore the profile salary floor and show everything."
+        False, "--all", help="Ignore the profile salary/posting-age floors and show everything."
     ),
 ) -> None:
     """List discovered jobs, best first: scored jobs rank by fit_score (highest
-    first), with your location_preference etc. as a tiebreaker; unscored jobs
-    follow, ranked the old way, until 'copilot score' reaches them. Jobs with
-    unknown salary/fit are always kept - floors only drop known-and-below
-    values."""
+    first), with recency and your location_preference etc. as tiebreakers;
+    unscored jobs follow, ranked the old way, until 'copilot score' reaches
+    them. Jobs with unknown salary/fit/posting-date are always kept - floors
+    only drop known-and-below values."""
+    from datetime import datetime, timedelta, timezone
+
     from sqlalchemy import select
 
     from copilot.db import get_engine, get_session
     from copilot.db.models import Job
+    from copilot.formatting import format_posted, format_salary
     from copilot.geocode import Geocoder
     from copilot.ranking import (
         build_rules,
@@ -488,6 +601,9 @@ def jobs_list(
 
     profile = load_profile()
     floor = None if show_all else (min_salary if min_salary is not None else profile.search.min_salary)
+    age_ceiling = (
+        None if show_all else (max_age if max_age is not None else profile.search.max_posting_age_days)
+    )
     geocoder = Geocoder()
     rules = build_rules(profile.search.location_preference, geocoder)
     industries = profile.search.industry_preference
@@ -509,6 +625,13 @@ def jobs_list(
             # Same "unknown, never dropped" rule as the salary floor: a job
             # simply not scored yet is not the same as a job that scored low.
             stmt = stmt.where((Job.fit_score.is_(None)) | (Job.fit_score >= min_fit))
+        if age_ceiling is not None:
+            # Live floor, not a one-time drop at discovery: a job's age keeps
+            # increasing whether or not you re-run discover, so this is
+            # re-evaluated against "now" on every list. Unknown posted_at is
+            # kept, same "unknown, never dropped" rule as the other floors.
+            cutoff = datetime.now(timezone.utc) - timedelta(days=age_ceiling)
+            stmt = stmt.where((Job.posted_at.is_(None)) | (Job.posted_at >= cutoff))
         jobs = session.scalars(stmt).all()
 
         if not jobs:
@@ -528,21 +651,24 @@ def jobs_list(
         table.add_column("Company")
         table.add_column("Location")
         table.add_column("Salary")
+        table.add_column("Posted")
         table.add_column("Source")
         for job in ranked:
             company_name = job.company.name if job.company else "?"
-            if job.salary_min or job.salary_max:
-                lo = f"{job.salary_min:,}" if job.salary_min else "?"
-                hi = f"{job.salary_max:,}" if job.salary_max else "?"
-                salary = f"${lo}-${hi}"
-            else:
-                salary = "unknown"
+            salary = format_salary(job)
             row = [str(job.id), f"{job.fit_score:.0f}" if job.fit_score is not None else "-"]
             if rules:
                 row.append(tier_label(preference_tier(job, rules), rules))
             if industries or downrank_staffing:
                 row.append(industry_label(ind_tier(job), industries))
-            row += [job.title, company_name, job.location or "unknown", salary, job.source]
+            row += [
+                job.title,
+                company_name,
+                job.location or "unknown",
+                salary,
+                format_posted(job),
+                job.source,
+            ]
             table.add_row(*row)
         console.print(table)
         if floor is not None:
@@ -555,6 +681,11 @@ def jobs_list(
                 f"[dim]Fit floor {min_fit} applied (unscored jobs kept) - "
                 "run 'copilot score' to reduce the unscored pool.[/]"
             )
+        if age_ceiling is not None:
+            console.print(
+                f"[dim]Posting-age ceiling {age_ceiling}d applied (unknown-date jobs kept) - "
+                "--all to see everything.[/]"
+            )
 
 
 @jobs_app.command("show")
@@ -565,6 +696,7 @@ def jobs_show(job_id: int) -> None:
 
     from copilot.db import get_engine, get_session
     from copilot.db.models import Job
+    from copilot.formatting import format_posted, format_salary
 
     with get_session(get_engine()) as session:
         job = session.scalar(select(Job).where(Job.id == job_id))
@@ -573,17 +705,14 @@ def jobs_show(job_id: int) -> None:
             raise typer.Exit(1)
 
         company = job.company.name if job.company else "?"
-        salary = "unknown"
-        if job.salary_min or job.salary_max:
-            lo = f"{job.salary_min:,}" if job.salary_min else "?"
-            hi = f"{job.salary_max:,}" if job.salary_max else "?"
-            salary = f"${lo}-${hi}"
+        salary = format_salary(job)
 
         console.print(
             Panel(
                 f"[bold]{job.title}[/] at [bold]{company}[/]\n"
                 f"{job.location or 'unknown location'}"
                 f"{' (remote)' if job.remote else ''} | {salary} | via {job.source}\n"
+                f"Posted {format_posted(job)}\n"
                 f"{job.apply_url}",
                 title=f"Job #{job.id}",
             )

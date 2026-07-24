@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from copilot.db.models import Job
@@ -151,3 +152,40 @@ def test_rank_jobs_scored_before_unscored_by_descending_fit(tmp_path: Path):
     unscored = _job(fit_score=None, salary_max=500000)
     ranked = rank_jobs([low, unscored, high], profile, _offline_geocoder(tmp_path))
     assert ranked == [high, low, unscored]
+
+
+def _days_ago(days: int) -> datetime:
+    return datetime.now(timezone.utc) - timedelta(days=days)
+
+
+def test_freshness_tier_buckets_by_fresh_window():
+    from copilot.ranking import FRESH_WINDOW_DAYS, freshness_tier
+
+    fresh = _job(posted_at=_days_ago(FRESH_WINDOW_DAYS - 1))
+    boundary = _job(posted_at=_days_ago(FRESH_WINDOW_DAYS))
+    stale = _job(posted_at=_days_ago(FRESH_WINDOW_DAYS + 1))
+    unknown = _job(posted_at=None)
+
+    assert freshness_tier(fresh) == 0
+    assert freshness_tier(boundary) == 0
+    assert freshness_tier(stale) == 1
+    assert freshness_tier(unknown) == 1  # never assumed fresh
+
+
+def test_rank_jobs_prefers_fresher_posting_within_same_fit_tier(tmp_path: Path):
+    from copilot.config import Profile
+    from copilot.ranking import rank_jobs
+
+    profile = Profile.model_validate(
+        {
+            "identity": {"full_name": "X", "email": "x@example.com"},
+            "resume_path": "data/resume.pdf",
+            "search": {"titles": ["Engineer"]},
+            "visa": {"needs_sponsorship": True, "status": "h1b_transfer"},
+            "email_integration": {"provider": "outlook", "address": "x@hotmail.com"},
+        }
+    )
+    fresh = _job(fit_score=70, posted_at=_days_ago(2))
+    stale = _job(fit_score=70, posted_at=_days_ago(45))
+    ranked = rank_jobs([stale, fresh], profile, _offline_geocoder(tmp_path))
+    assert ranked == [fresh, stale]

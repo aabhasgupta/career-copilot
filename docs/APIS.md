@@ -71,9 +71,16 @@ Every third-party service this project talks to, what it's for, how it's authent
 - **Caching:** downloaded once to `data/h1b_data_hub_fy2023.csv` (gitignored); `copilot sponsorship-sync --refresh` forces a re-download.
 - **Matching caveat (load-bearing, found live 2026-07-23):** filer names are legal entity names ("AMAZON COM SERVICES LLC") that often differ from the brand name a job posting uses ("Amazon"). Matching is exact-after-normalization first, then a prefix match restricted to distinctive names (2+ words, or 6+ characters as a single word) - short acronym brand names (e.g. "EXL", "CGI") that differ from their legal filer name will often go unmatched by design, favoring precision over recall (same lesson as the Lever slug false-positive in D3).
 
+### Microsoft Graph API
+- **Used for:** sending mail from the user's Hotmail/Outlook.com account (`email_agent/outlook.py`, `copilot email login` / `copilot email test` / `copilot digest`) - the digest email today; inbox monitoring is Phase 4, not yet built.
+- **Auth:** MSAL device-code flow against a personal-Microsoft-account app registration ("Personal Microsoft accounts only", public client flows enabled, no client secret). `AZURE_CLIENT_ID` in `.env` identifies the app; `copilot email login` opens the device-code prompt once and caches the resulting token at `data/email_token.json` (gitignored) for silent renewal after that.
+- **Scopes:** `Mail.Send`, `Mail.Read`, `Mail.ReadWrite`, `MailboxSettings.ReadWrite` (the latter three reserved for Phase 4 inbox monitoring; only `Mail.Send` is exercised today).
+- **Endpoint:** `POST graph.microsoft.com/v1.0/me/sendMail`.
+- **Verified live:** 2026-07-24 - device-code login, `copilot email test`, and `copilot digest` (both the "nothing new" skip path and a real populated send) all confirmed against the user's actual Hotmail inbox.
+
 ## Planned, not yet integrated
 
-- **Microsoft Graph API** - Outlook/Hotmail inbox monitoring and sending (Phase 2 for sending, Phase 4 for monitoring). Auth via MSAL device-code flow, not a static key.
+(nothing currently)
 
 ## Planned tooling
 

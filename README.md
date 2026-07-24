@@ -13,7 +13,7 @@ Design principle: assist, never impersonate. No LinkedIn scraping, no auto-submi
 
 ## Status
 
-Phases 0 (foundation) and 1 (discovery) complete. Phase 2's fit scoring and sponsorship research are done; email sending is next. See `docs/PLAN.md` for the roadmap, `docs/DECISIONS.md` for design decisions, and `docs/APIS.md` for the external APIs in use.
+Phases 0 (foundation) and 1 (discovery) complete. Phase 2 - fit scoring, sponsorship research, and email digests - is done and verified live against a real inbox. See `docs/PLAN.md` for the roadmap, `docs/DECISIONS.md` for design decisions, and `docs/APIS.md` for the external APIs in use.
 
 ## Setup
 
@@ -41,17 +41,19 @@ uv run copilot discover      # searches Adzuna + JSearch (which indexes LinkedIn
                              # employer apply links and full JD text
 uv run copilot jobs list                     # best first (see below)
 uv run copilot jobs list --location chicago  # plus ad-hoc filters
-uv run copilot jobs list --all               # ignore the salary floor
+uv run copilot jobs list --max-age 7         # only postings from the last week
+uv run copilot jobs list --all               # ignore the salary and posting-age floors
 ```
 
-Re-running `discover` is always safe: postings are deduped by company+title+location, so nothing is stored twice.
+Re-running `discover` is always safe: postings are deduped by company+title+location, so nothing is stored twice. Each source's own posting date is captured too (shown as "posted Nd ago" in `jobs list`/`jobs show`/the dashboard) - separate from when *you* discovered it, and stored as unknown rather than guessed when a source doesn't report one.
 
-Listings come back ordered by your preferences, not just recency. In `profile.yaml`:
+Listings come back ordered by fit, freshness, and your preferences. In `profile.yaml`:
 
 - `search.location_preference` - ordered list that *sorts* jobs (never hides them): `remote`, `within 30 miles of <place>` (real distances - jobs are geocoded once and cached), or plain location text
 - `search.industry_preference` - ordered industries you fit best (e.g. banking, fintech, tech, consulting); each company is classified once by Claude and the label stored, so ordering stays instant and free
 - `search.company_preference` - companies you would love to work for: their listings rank higher, and their public ATS boards are watched directly so postings arrive with first-party apply links
 - `search.min_salary` - hard floor: jobs whose known salary is below it are dropped; jobs that don't state a salary are always kept
+- `search.max_posting_age_days` (default 30) - hard floor on posting age, re-checked live against today's date every time you list jobs (not just at discovery time), so a listing quietly ages out the day it crosses the threshold; jobs with an unknown posting date are always kept. Postings within 14 days also rank as a group ahead of older ones, not just as a last-resort tiebreak - see `docs/DECISIONS.md`
 - `search.dealbreakers` - hard drops, written in plain English ("no clearance jobs", "don't give me jobs based in Alabama", "nothing at Meta"); Claude compiles them once into precise field-level filters, cached until the list changes
 
 Changed your rules? `uv run copilot jobs prune` re-applies them to everything already stored - no API calls, since the database holds everything ever discovered. Jobs you've applied to are never pruned.
@@ -91,6 +93,27 @@ Matches companies by name against the public USCIS H-1B Employer Data Hub - free
 zero LLM calls. This is historical, company-wide evidence (a company can change policy, or
 sponsor for some roles and not others), so it's deliberately never folded into `fit_score` -
 see it as separate context in `copilot jobs show <id>`.
+
+## Email digest
+
+```sh
+uv run copilot email login   # one-time device-code sign-in to your Hotmail/Outlook.com account
+uv run copilot email test    # sends yourself a test email to confirm sending works
+uv run copilot digest        # emails a summary of jobs discovered since the last digest
+uv run copilot digest --dry-run   # prints the digest without sending or marking it sent
+```
+
+Sending goes through Microsoft Graph (MSAL device-code flow - no password or client secret
+stored; see `docs/APIS.md`). Requires `AZURE_CLIENT_ID` in `.env` from a personal-Microsoft-account
+app registration with public client flows enabled (walk-through in `docs/DECISIONS.md`). `copilot
+email login` caches the resulting token locally and renews it silently after that - you only do
+the device-code prompt once.
+
+The digest reports jobs discovered since the last digest was sent (tracked in
+`data/digest_state.json`, not a fixed 24h window, so a missed scheduled run never silently drops
+jobs), calling out anything scored 70+ in a table and summarizing the rest as a count - a mailbox
+isn't the place to browse the full list, `copilot jobs list` and the dashboard's Jobs tab are.
+Nothing is sent when there's nothing new since the last send.
 
 ## Development
 

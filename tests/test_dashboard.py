@@ -164,6 +164,74 @@ def test_job_detail_404_for_missing_job(tmp_path: Path):
     assert resp.status_code == 404
 
 
+def _client_with_ages(tmp_path: Path):
+    from datetime import datetime, timedelta, timezone
+
+    from copilot.db import get_engine, get_session, init_db
+    from copilot.db.models import Company, Job
+
+    profile_path = tmp_path / "profile.yaml"
+    profile_path.write_text(PROFILE)  # search.max_posting_age_days unset -> config default of 30
+    db_path = tmp_path / "test.db"
+    engine = get_engine(db_path)
+    init_db(engine)
+    now = datetime.now(timezone.utc)
+    with get_session(engine) as session:
+        co = Company(name="Acme")
+        session.add(co)
+        session.flush()
+        session.add_all(
+            [
+                Job(
+                    company_id=co.id,
+                    title="Fresh Job",
+                    source="adzuna",
+                    apply_url="https://example.com/fresh",
+                    dedupe_hash="fresh",
+                    posted_at=now - timedelta(days=5),
+                ),
+                Job(
+                    company_id=co.id,
+                    title="Stale Job",
+                    source="adzuna",
+                    apply_url="https://example.com/stale",
+                    dedupe_hash="stale",
+                    posted_at=now - timedelta(days=60),
+                ),
+                Job(
+                    company_id=co.id,
+                    title="Unknown Age Job",
+                    source="adzuna",
+                    apply_url="https://example.com/unknown",
+                    dedupe_hash="unknown",
+                ),
+            ]
+        )
+        session.commit()
+    return TestClient(create_app(profile_path, db_path=db_path))
+
+
+def test_jobs_list_applies_profile_age_floor_by_default(tmp_path: Path):
+    client = _client_with_ages(tmp_path)
+    resp = client.get("/jobs")
+    assert "Fresh Job" in resp.text
+    assert "Unknown Age Job" in resp.text  # unknown posted_at is never dropped
+    assert "Stale Job" not in resp.text  # older than the 30-day default
+    assert 'value="30"' in resp.text  # input reflects the applied floor
+
+
+def test_jobs_list_explicit_max_age_overrides_default(tmp_path: Path):
+    client = _client_with_ages(tmp_path)
+    resp = client.get("/jobs", params={"max_age": "90"})
+    assert "Stale Job" in resp.text
+
+
+def test_jobs_list_blank_max_age_disables_floor(tmp_path: Path):
+    client = _client_with_ages(tmp_path)
+    resp = client.get("/jobs", params={"max_age": ""})
+    assert "Stale Job" in resp.text
+
+
 def test_save_rejects_invalid_and_writes_nothing(tmp_path: Path):
     client, path = _client(tmp_path)
     before = path.read_text()

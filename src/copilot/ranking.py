@@ -19,10 +19,23 @@ from dataclasses import dataclass
 
 from copilot.config import Profile
 from copilot.db.models import Job
+from copilot.formatting import posting_age_days
 from copilot.geocode import Geocoder
 
 _RADIUS_RE = re.compile(r"^within\s+(\d+)\s+miles?\s+of\s+(.+)$", re.IGNORECASE)
 _EARTH_RADIUS_MILES = 3958.8
+
+# Coarse recency bucket used as a dominant-ish ranking signal (not just a
+# last-resort tiebreak) - "important factor" per the user, not blended into
+# fit_score. Separate from search.max_posting_age_days, which drops jobs
+# outright once they're stale; this just groups the freshest ones first
+# among what's still shown. Unknown posted_at is never assumed fresh.
+FRESH_WINDOW_DAYS = 14
+
+
+def freshness_tier(job: Job) -> int:
+    age = posting_age_days(job)
+    return 0 if age is not None and age <= FRESH_WINDOW_DAYS else 1
 
 
 def haversine_miles(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -151,8 +164,13 @@ def rank_jobs(jobs: list[Job], profile: Profile, geocoder: Geocoder) -> list[Job
     descending - the model's holistic judgment is the strongest signal once it
     exists. Unscored jobs (fit_score is None) all tie on those first two keys
     and fall back to the pre-Phase-2 ranking: staffing-agency jobs sort after
-    direct employers (dominant rule, not blended), then the location/industry/
-    company preference blend, then salary, then recency."""
+    direct employers (dominant rule, not blended), then a coarse freshness
+    tier (postings within FRESH_WINDOW_DAYS group ahead of older ones - a
+    real ranking factor, not just a tiebreak), then the location/industry/
+    company preference blend, then salary, then fine-grained recency - by the
+    posting's own posted_at (when the source says the job went live), not our
+    created_at (when we happened to discover it); unknown posted_at sorts
+    after known, never assumed to be the newest."""
     rules = build_rules(profile.search.location_preference, geocoder)
     industries = profile.search.industry_preference
     companies = profile.search.company_preference
@@ -167,9 +185,11 @@ def rank_jobs(jobs: list[Job], profile: Profile, geocoder: Geocoder) -> list[Job
             j.fit_score is None,
             -(j.fit_score or 0),
             ind_tier(j) > len(industries),
+            freshness_tier(j),
             preference_tier(j, rules) + min(ind_tier(j), len(industries)) + company_tier(j, companies),
             preference_tier(j, rules),
             -(j.salary_max or j.salary_min or 0),
-            -(j.created_at.timestamp() if j.created_at else 0),
+            j.posted_at is None,
+            -(j.posted_at.timestamp() if j.posted_at else 0),
         ),
     )

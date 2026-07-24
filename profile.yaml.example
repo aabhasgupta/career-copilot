@@ -33,6 +33,11 @@ search:
   # don't state a salary are always kept ("unknown, never dropped").
   min_salary: null     # e.g. 120000; null = no floor
   salary_currency: USD
+  # Age floor: hides jobs posted longer ago than this (per the source's own
+  # posting date, not when we discovered it) - re-evaluated live every time
+  # you list jobs, so a listing quietly ages out the day it crosses the
+  # threshold. Jobs with unknown posting dates are always kept.
+  max_posting_age_days: 30   # e.g. null = no floor
   # Hard filters: jobs matching any of these are dropped, not just downranked.
   # Plain English - Claude compiles these into precise filters (cached until
   # the list changes). e.g. ["no clearance jobs", "don't give me jobs based
