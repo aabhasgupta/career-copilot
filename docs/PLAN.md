@@ -8,7 +8,7 @@ A job-search copilot agent for a single user (configured via `profile.yaml`, so 
 
 1. Discovers jobs matching the user's resume and preferences across many companies, with no hand-curated company list
 2. Scores each job for fit with an explainable LLM rubric, including visa/sponsorship feasibility (user needs H1B transfer)
-3. Prepares tailored, paste-ready application packets; pre-fills ATS forms locally via Playwright; the human always reviews and clicks submit
+3. Prepares tailored, paste-ready application packets (boilerplate + a small per-job addendum); the human copies the content into the form themselves (by hand or via an existing autofill tool) and always clicks submit
 4. Tracks every application in SQLite (states: found, queued, applied, replied, interviewing, offer, rejected, ghosted) with salary, location, and visa status as first-class fields
 5. Monitors the user's Hotmail inbox via Microsoft Graph, correlates replies to applications, files them into a Career Copilot folder with categories, and alerts by email
 6. Scores response likelihood to prioritize the queue
@@ -21,7 +21,6 @@ A job-search copilot agent for a single user (configured via `profile.yaml`, so 
 - Claude API (claude-sonnet-5) for resume understanding, fit scoring, JD analysis, tailoring, email classification
 - Typer CLI (`copilot ...`) as the v1 interface; local web dashboard is a later optional phase
 - Microsoft Graph API (MSAL device-code flow, free Azure app registration on a personal Microsoft account) behind an `EmailProvider` interface chosen in `profile.yaml`; Gmail as second implementation for genericity
-- Playwright for local browser prefill of ATS application forms (Phase 3)
 - launchd for scheduling (not cron: launchd fires missed runs on wake from sleep; laptop does not need to stay on)
 
 ## Repo layout
@@ -36,7 +35,7 @@ career-copilot/
     db/                       # SQLAlchemy models + migrations
     discovery/                # adzuna.py, jsearch.py, ats/{greenhouse,lever,ashby}.py, dedupe.py
     scoring/                  # rubric.py (LLM fit score), sponsorship.py (H1B data)
-    apply_assist/             # tailoring.py, packet.py, prefill.py (Playwright)
+    apply_assist/             # tailoring.py, packet.py
     email_agent/              # provider.py (interface), outlook.py, gmail.py, classifier.py, correlator.py
     notify/                   # digest.py, alerts.py
     schedule/                 # launchd plist management
@@ -75,10 +74,11 @@ Recency as a real ranking factor (user feedback 2026-07-24: "there is no point a
 
 ### [ ] Phase 3 - Application assist + tracking (web dashboard as the human surface - D11)
 **Update (2026-07-23, D19)**: the read-only half of the dashboard table landed early, same pattern as the preferences editor (D11's update) - `copilot dashboard`'s **Jobs** tab shows every job sorted best-fit-first (`ranking.rank_jobs`, shared with `copilot jobs list` so the two can't drift) with fit score, salary, location, visa/sponsorship signal, and apply link, plus a click-through detail page for the full 5-dimension breakdown and sponsorship evidence. What's still Phase 3: queueing, mark-applied, the packet, and the state machine below - the table only reads today, it doesn't write.
-Per-job packet (markdown), paste-ready not advisory: personal details, correctly-worded work-authorization answers for H1B transfer, tailored resume bullets, drafted answers to the posting's custom questions, direct apply link. State machine on `applications`.
-Primary interface is a local web dashboard (localhost, same SQLite DB per D5): table of scored jobs with fit, salary, location, visa signal, and apply link; queue jobs, open the packet, and mark applied with a click instead of per-ID CLI commands. CLI keeps the machine-facing commands (`copilot status` for a quick pipeline view incl. visa breakdown; `copilot dashboard` to serve the UI). Manual marking becomes the fallback once Phase 4's email agent auto-marks applications from ATS confirmation emails.
-Second half: local browser prefill for Greenhouse/Lever/Ashby forms - Playwright on the user's machine fills standard fields (contact info, resume upload, links, visa questions), then stops and hands control to the user to review, complete custom questions from the packet, and click submit. Packet-only remains the fallback for non-ATS jobs.
-**Verify**: user applies to 2-3 real jobs end to end through the dashboard and confirms the flow beats manual.
+**Update (2026-07-24, D22)**: dropped the Playwright browser-prefill sub-phase and reshaped the packet - see D22 for the full reasoning. Summary below reflects the current design, not the original.
+Per-job packet (markdown, `data/packets/<job_id>.md`, path stored on `Application.tailored_materials_path`), generated on demand (`copilot packet <job-id>` or a dashboard click) - not batch-generated for every scored job. Two layers: (1) a single reusable boilerplate doc (contact details, H1B-transfer work-authorization answers) filled from `profile.yaml`/the cached resume profile, generated once and reused by every packet rather than regenerated per job; (2) a small per-job addendum - one Claude call producing a short "why this job" blurb (reusing the job's `fit_reasoning`) and which existing resume bullets/skills to foreground for this specific posting. Custom application-form questions are deliberately not drafted - the JD text available to us isn't the actual apply-form content, and guessing plausible-sounding answers to questions we can't see would be worse than leaving the section out. State machine on `applications`.
+Primary interface is a local web dashboard (localhost, same SQLite DB per D5): table of scored jobs with fit, salary, location, visa signal, and apply link; queue jobs, open the packet, and mark applied with a click instead of per-ID CLI commands - the dashboard's first write actions (D19 shipped it read-only). CLI keeps the machine-facing commands (`copilot status` for a quick pipeline view incl. visa breakdown; `copilot dashboard` to serve the UI). Manual marking becomes the fallback once Phase 4's email agent auto-marks applications from ATS confirmation emails.
+Actually filling out and submitting the form is out of scope, by design (D22): copy the packet's content into the ATS form by hand, or paste it into an existing free autofill tool like Simplify - Career Copilot's job is producing the content, not re-solving per-ATS form automation that dedicated tools already do well.
+**Verify**: user applies to 2-3 real jobs end to end using a generated packet and confirms the content is genuinely paste-ready (not requiring rewrites) and the dashboard state machine (queue -> applied) matches what actually happened.
 
 ### [ ] Phase 4 - Inbox monitoring + schedule management
 `copilot inbox sync` (scheduled): pre-filters recent Hotmail messages to job/ATS-like sender and subject patterns (not the whole inbox), then tries to correlate each against `applications` (company domain, subject, ATS sender addresses like no-reply@greenhouse.io) and classify with Claude (rejection / OA / interview invite / recruiter screen). Matched emails: file into a single "Career Copilot" folder tagged with an Outlook category per type (not per-type subfolders - see D20 for why), update application state, send an immediate alert for actionable events plus the daily digest (new high-fit jobs, state changes, response stats).

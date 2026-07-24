@@ -15,7 +15,7 @@ This is also a learning project (first agentic build) and a portfolio piece: exp
 
 ## Stack
 
-Python 3.12 + uv, SQLAlchemy/SQLite, Typer CLI, Claude API (claude-sonnet-5) for scoring/tailoring/classification, Microsoft Graph for email, Playwright for local browser prefill (Phase 3), launchd for scheduling (not cron; missed runs must fire on wake).
+Python 3.12 + uv, SQLAlchemy/SQLite, Typer CLI, Claude API (claude-sonnet-5) for scoring/tailoring/classification, Microsoft Graph for email, launchd for scheduling (not cron; missed runs must fire on wake).
 
 ## Status
 
