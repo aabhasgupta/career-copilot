@@ -1,11 +1,14 @@
 """Local web dashboard (D11). Two pages so far:
 
 - Preferences: edits profile.yaml's search section, so tuning
-  titles/locations/salary/preferences is a form instead of a YAML edit.
-- Jobs (read-only): browse/sort/filter scored jobs and drill into the full
-  fit + sponsorship breakdown for one - the "unified view" a CLI table can't
-  give without becoming unreadable (docs/DECISIONS.md D19). Mark-applied and
-  application tracking are Phase 3 scope, not built here yet.
+  titles/locations/salary/preferences is a form instead of a YAML edit. Also
+  has the base application packet (D22/D23): view/regenerate the one
+  reusable content doc, not per-job.
+- Jobs: browse/sort/filter scored jobs and drill into the full fit +
+  sponsorship breakdown for one - the "unified view" a CLI table can't give
+  without becoming unreadable (docs/DECISIONS.md D19). The detail page has
+  the dashboard's first write actions - Queue / Mark applied - both explicit
+  clicks that only record what the user already did (D1).
 
 Design constraints:
 - Same source of truth: reads profile.yaml/the SQLite DB directly - no
@@ -28,7 +31,7 @@ from sqlalchemy import select
 
 from copilot.config import Profile
 from copilot.db import get_engine, get_session
-from copilot.db.models import Job
+from copilot.db.models import Application, Job
 from copilot.formatting import format_posted, format_salary
 from copilot.geocode import Geocoder
 from copilot.industry import Industry
@@ -131,6 +134,15 @@ _STYLE = """
   .backlink { display: inline-block; margin-bottom: 1rem; color: var(--muted);
               text-decoration: none; font-size: .85rem; }
   .backlink:hover { color: var(--ink); }
+
+  .packetbox { white-space: pre-wrap; background: #f7f7fb; border: 1px solid var(--line);
+               border-radius: 10px; padding: 1rem; font-family: ui-monospace, monospace;
+               font-size: .82rem; max-height: 320px; overflow-y: auto; }
+  .state { font-weight: 700; padding: .15rem .55rem; border-radius: 999px; font-size: .82rem;
+           background: #eef0fb; color: var(--accent); }
+  .btn-row { display: flex; gap: .6rem; flex-wrap: wrap; }
+  .btn-row button { padding: .5rem 1.2rem; }
+  button.secondary { background: #eef0fb; color: var(--ink); box-shadow: none; }
 """
 
 
@@ -212,7 +224,20 @@ are watched directly</span></label>
   <span class="footnote">writes profile.yaml &middot; comments preserved &middot;
   validated before saving</span>
 </div>
-</form>"""
+</form>
+
+<div class="card">
+<h2>Application packet</h2>
+<p class="sub">Reusable content - contact details, H1B work-authorization Q&amp;A,
+and a resume summary - the same for every job, so it's generated once and
+reused rather than regenerated per posting (docs/DECISIONS.md D22, D23).
+Regenerate it yourself after editing your resume or profile.yaml; it never
+happens automatically.</p>
+{packet_section}
+<form method="post" action="/packet/base">
+  <div class="actions"><button type="submit" class="secondary">Regenerate base packet</button></div>
+</form>
+</div>"""
 
 
 def _lines(values: list[str]) -> str:
@@ -304,7 +329,7 @@ def _dimension_rows(job: Job) -> str:
     )
 
 
-def _job_detail_body(job: Job) -> str:
+def _job_detail_body(job: Job, application: Application | None) -> str:
     company = html.escape(job.company.name) if job.company else "?"
     title = html.escape(job.title)
     location = html.escape(job.location or "unknown location")
@@ -344,13 +369,44 @@ not a live policy, and never blended into the fit score above (see docs/DECISION
     return (
         '<a class="backlink" href="/jobs">&larr; Back to jobs</a>'
         + header_card
+        + _application_actions(job.id, application)
         + fit_card
         + sponsorship_card
     )
 
 
-def create_app(profile_path: Path = Path("profile.yaml"), db_path: Path | None = None) -> FastAPI:
+def _packet_section(packet_base_path: Path) -> str:
+    if not packet_base_path.exists():
+        return '<p class="sub">Not generated yet.</p>'
+    return f'<div class="packetbox">{html.escape(packet_base_path.read_text())}</div>'
+
+
+def _application_actions(job_id: int, application: Application | None) -> str:
+    state = application.state.value if application else "found"
+    return f"""<div class="card">
+<h2>Application status: <span class="state">{state}</span></h2>
+<div class="btn-row">
+<form method="post" action="/jobs/{job_id}/queue">
+  <button type="submit" class="secondary">Queue</button>
+</form>
+<form method="post" action="/jobs/{job_id}/mark-applied">
+  <button type="submit">Mark applied</button>
+</form>
+</div>
+<p class="footnote">These only record what you did yourself - Career Copilot never
+submits an application.</p>
+</div>"""
+
+
+def create_app(
+    profile_path: Path = Path("profile.yaml"),
+    db_path: Path | None = None,
+    packet_base_path: Path | None = None,
+) -> FastAPI:
+    from copilot.packet import PACKET_BASE_PATH
+
     app = FastAPI(title="Career Copilot")
+    packet_path = packet_base_path if packet_base_path is not None else PACKET_BASE_PATH
 
     def render_prefs(flash: str = "") -> str:
         with open(profile_path) as f:
@@ -368,6 +424,7 @@ def create_app(profile_path: Path = Path("profile.yaml"), db_path: Path | None =
             company_preference=_lines(search.company_preference),
             industry_vocab=", ".join(i.value for i in Industry),
             staffing_checked="checked" if search.deprioritize_staffing else "",
+            packet_section=_packet_section(packet_path),
         )
         return _shell("/", body)
 
@@ -416,6 +473,20 @@ def create_app(profile_path: Path = Path("profile.yaml"), db_path: Path | None =
 
         update_search_preferences(profile_path, updates)
         return RedirectResponse("/saved", status_code=303)
+
+    @app.get("/packet/saved", response_class=HTMLResponse)
+    def packet_saved() -> str:
+        return render_prefs(flash='<div class="flash ok">Base packet regenerated.</div>')
+
+    @app.post("/packet/base")
+    def packet_base():
+        from copilot.packet import write_base_packet
+
+        with open(profile_path) as f:
+            raw = pyyaml.safe_load(f)
+        profile = Profile.model_validate(raw)
+        write_base_packet(profile, path=packet_path)
+        return RedirectResponse("/packet/saved", status_code=303)
 
     @app.get("/jobs", response_class=HTMLResponse)
     def jobs_list(
@@ -467,7 +538,30 @@ def create_app(profile_path: Path = Path("profile.yaml"), db_path: Path | None =
                     ),
                     status_code=404,
                 )
-            body = _job_detail_body(job)
+            application = session.scalar(select(Application).where(Application.job_id == job_id))
+            body = _job_detail_body(job, application)
         return _shell("/jobs", body)
+
+    @app.post("/jobs/{job_id}/queue")
+    def job_queue(job_id: int):
+        from copilot.applications import queue
+
+        with get_session(get_engine(db_path)) as session:
+            if session.scalar(select(Job).where(Job.id == job_id)) is None:
+                return HTMLResponse(f"No job with id {job_id}.", status_code=404)
+            queue(session, job_id)
+            session.commit()
+        return RedirectResponse(f"/jobs/{job_id}", status_code=303)
+
+    @app.post("/jobs/{job_id}/mark-applied")
+    def job_mark_applied(job_id: int):
+        from copilot.applications import mark_applied
+
+        with get_session(get_engine(db_path)) as session:
+            if session.scalar(select(Job).where(Job.id == job_id)) is None:
+                return HTMLResponse(f"No job with id {job_id}.", status_code=404)
+            mark_applied(session, job_id)
+            session.commit()
+        return RedirectResponse(f"/jobs/{job_id}", status_code=303)
 
     return app

@@ -20,9 +20,11 @@ app = typer.Typer(help="Job-search copilot. You always click submit.")
 profile_app = typer.Typer(help="Your profile and resume.")
 jobs_app = typer.Typer(help="Discovered jobs.")
 email_app = typer.Typer(help="Email login and sending (Microsoft Graph).")
+packet_app = typer.Typer(help="Application packet (reusable content, not per-job).")
 app.add_typer(profile_app, name="profile")
 app.add_typer(jobs_app, name="jobs")
 app.add_typer(email_app, name="email")
+app.add_typer(packet_app, name="packet")
 
 console = Console()
 
@@ -406,6 +408,25 @@ def sponsorship_sync(
     )
 
 
+@packet_app.command("base")
+def packet_base_cmd() -> None:
+    """(Re)generate data/packet_base.md: contact details, H1B-transfer
+    work-authorization Q&A, and a resume summary - the content that's the
+    same for every application, so it's written once and reused rather than
+    regenerated per job (docs/DECISIONS.md D22, D23). Only ever runs when you
+    ask - re-run this yourself after editing your resume or profile.yaml."""
+    if not Path(PROFILE_FILENAME).exists():
+        console.print(f"[red]{PROFILE_FILENAME} not found.[/] Run 'copilot init' first.")
+        raise typer.Exit(1)
+
+    from copilot.packet import PACKET_BASE_PATH, write_base_packet
+
+    profile = load_profile()
+    with console.status("Building base packet (re-extracts your resume only if it changed)..."):
+        write_base_packet(profile)
+    console.print(f"[green]Wrote {PACKET_BASE_PATH}[/]")
+
+
 @email_app.command("login")
 def email_login() -> None:
     """One-time interactive Microsoft sign-in (device-code flow): prints a
@@ -695,7 +716,7 @@ def jobs_show(job_id: int) -> None:
     from sqlalchemy import select
 
     from copilot.db import get_engine, get_session
-    from copilot.db.models import Job
+    from copilot.db.models import Application, Job
     from copilot.formatting import format_posted, format_salary
 
     with get_session(get_engine()) as session:
@@ -706,13 +727,15 @@ def jobs_show(job_id: int) -> None:
 
         company = job.company.name if job.company else "?"
         salary = format_salary(job)
+        application = session.scalar(select(Application).where(Application.job_id == job_id))
+        state_line = f"State: {application.state.value}" if application else "State: not tracked yet"
 
         console.print(
             Panel(
                 f"[bold]{job.title}[/] at [bold]{company}[/]\n"
                 f"{job.location or 'unknown location'}"
                 f"{' (remote)' if job.remote else ''} | {salary} | via {job.source}\n"
-                f"Posted {format_posted(job)}\n"
+                f"Posted {format_posted(job)} | {state_line}\n"
                 f"{job.apply_url}",
                 title=f"Job #{job.id}",
             )
@@ -752,6 +775,47 @@ def jobs_show(job_id: int) -> None:
                     )
                     + "[/]"
                 )
+
+
+@jobs_app.command("queue")
+def jobs_queue(job_id: int) -> None:
+    """Mark a job as queued - a declaration of intent to apply, not an
+    automated action. Creates the application record if one doesn't exist
+    yet; never downgrades a job already further along (applied, etc.)."""
+    from sqlalchemy import select
+
+    from copilot.applications import queue
+    from copilot.db import get_engine, get_session
+    from copilot.db.models import Job
+
+    with get_session(get_engine()) as session:
+        if session.scalar(select(Job).where(Job.id == job_id)) is None:
+            console.print(f"[red]No job with id {job_id}.[/]")
+            raise typer.Exit(1)
+        application = queue(session, job_id)
+        session.commit()
+        console.print(f"[green]Job {job_id} is now {application.state.value}.[/]")
+
+
+@jobs_app.command("mark-applied")
+def jobs_mark_applied(job_id: int) -> None:
+    """Mark a job as applied. This only records what you already did
+    yourself - Career Copilot never submits applications (D1)."""
+    from sqlalchemy import select
+
+    from copilot.applications import mark_applied
+    from copilot.db import get_engine, get_session
+    from copilot.db.models import Job
+
+    with get_session(get_engine()) as session:
+        if session.scalar(select(Job).where(Job.id == job_id)) is None:
+            console.print(f"[red]No job with id {job_id}.[/]")
+            raise typer.Exit(1)
+        application = mark_applied(session, job_id)
+        session.commit()
+        console.print(
+            f"[green]Job {job_id} marked applied[/] at {application.applied_at:%Y-%m-%d %H:%M} UTC."
+        )
 
 
 if __name__ == "__main__":

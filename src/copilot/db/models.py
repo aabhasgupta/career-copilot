@@ -144,7 +144,6 @@ class Application(Base):
         Enum(ApplicationState), default=ApplicationState.found, index=True
     )
     applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    tailored_materials_path: Mapped[str | None] = mapped_column(Text)
     notes: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(

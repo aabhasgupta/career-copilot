@@ -28,7 +28,7 @@ email_integration:
 def _client(tmp_path: Path) -> tuple[TestClient, Path]:
     path = tmp_path / "profile.yaml"
     path.write_text(PROFILE)
-    return TestClient(create_app(path)), path
+    return TestClient(create_app(path, packet_base_path=tmp_path / "packet_base.md")), path
 
 
 def _client_with_db(tmp_path: Path):
@@ -80,7 +80,7 @@ def _client_with_db(tmp_path: Path):
             )
         )
         session.commit()
-    return TestClient(create_app(profile_path, db_path=db_path))
+    return TestClient(create_app(profile_path, db_path=db_path, packet_base_path=tmp_path / "packet_base.md"))
 
 
 def test_index_renders_current_values(tmp_path: Path):
@@ -208,7 +208,7 @@ def _client_with_ages(tmp_path: Path):
             ]
         )
         session.commit()
-    return TestClient(create_app(profile_path, db_path=db_path))
+    return TestClient(create_app(profile_path, db_path=db_path, packet_base_path=tmp_path / "packet_base.md"))
 
 
 def test_jobs_list_applies_profile_age_floor_by_default(tmp_path: Path):
@@ -230,6 +230,38 @@ def test_jobs_list_blank_max_age_disables_floor(tmp_path: Path):
     client = _client_with_ages(tmp_path)
     resp = client.get("/jobs", params={"max_age": ""})
     assert "Stale Job" in resp.text
+
+
+def test_packet_section_shows_not_generated_when_missing(tmp_path: Path):
+    client, _ = _client(tmp_path)
+    resp = client.get("/")
+    assert "Not generated yet." in resp.text
+
+
+def test_job_queue_and_mark_applied_actions(tmp_path: Path):
+    client = _client_with_db(tmp_path)
+    list_resp = client.get("/jobs")
+    start = list_resp.text.index("/jobs/") + len("/jobs/")
+    job_id = list_resp.text[start : list_resp.text.index('"', start)]
+
+    detail = client.get(f"/jobs/{job_id}")
+    assert 'class="state">found' in detail.text
+
+    queue_resp = client.post(f"/jobs/{job_id}/queue", follow_redirects=False)
+    assert queue_resp.status_code == 303
+    detail = client.get(f"/jobs/{job_id}")
+    assert 'class="state">queued' in detail.text
+
+    applied_resp = client.post(f"/jobs/{job_id}/mark-applied", follow_redirects=False)
+    assert applied_resp.status_code == 303
+    detail = client.get(f"/jobs/{job_id}")
+    assert 'class="state">applied' in detail.text
+
+
+def test_job_queue_404_for_missing_job(tmp_path: Path):
+    client = _client_with_db(tmp_path)
+    resp = client.post("/jobs/99999/queue")
+    assert resp.status_code == 404
 
 
 def test_save_rejects_invalid_and_writes_nothing(tmp_path: Path):
