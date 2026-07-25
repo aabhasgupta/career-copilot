@@ -135,3 +135,82 @@ def test_confirm_missing_suggestion_raises(tmp_path: Path):
     with _session(tmp_path) as session:
         with pytest.raises(LookupError):
             confirm(session, 99)
+
+
+def _tracked_job(session) -> Job:
+    company = Company(name="Stripe")
+    session.add(company)
+    session.flush()
+    job = Job(
+        company_id=company.id,
+        title="ML Engineer",
+        source="greenhouse",
+        apply_url="https://stripe.com/jobs/1",
+        dedupe_hash="stripe-ml",
+    )
+    session.add(job)
+    session.flush()
+    return job
+
+
+def test_confirm_with_job_id_links_instead_of_creating(tmp_path: Path):
+    """D28: the human knows which application an email belongs to even when
+    the correlator couldn't tell - linking must not mint duplicate records."""
+    with _session(tmp_path) as session:
+        job = _tracked_job(session)
+        session.add(
+            _untracked_suggestion(
+                sender="recruiter@stripe.com", company_name=None, job_title=None
+            )
+        )
+        session.commit()
+
+        confirm(session, 1, job_id=job.id)
+        session.commit()
+
+        assert session.query(Company).count() == 1  # nothing new created
+        assert session.query(Job).count() == 1
+        application = session.query(Application).one()
+        assert application.job_id == job.id
+        assert application.state == ApplicationState.applied  # forward from found
+        assert session.query(EmailEvent).one().application_id == application.id
+        assert job.company.domain == "stripe.com"  # learned from the sender
+
+
+def test_confirm_link_never_moves_state_backward(tmp_path: Path):
+    with _session(tmp_path) as session:
+        job = _tracked_job(session)
+        session.add(Application(job_id=job.id, state=ApplicationState.interviewing))
+        session.add(_untracked_suggestion(sender="recruiter@stripe.com"))
+        session.commit()
+
+        confirm(session, 1, job_id=job.id)  # proposes applied - stale news
+        session.commit()
+
+        application = session.query(Application).one()
+        assert application.state == ApplicationState.interviewing  # untouched
+        assert session.query(EmailEvent).count() == 1  # but still recorded
+
+
+def test_confirm_link_rejected_for_conflict_suggestions(tmp_path: Path):
+    with _session(tmp_path) as session:
+        job = _tracked_job(session)
+        application = Application(job_id=job.id, state=ApplicationState.rejected)
+        session.add(application)
+        session.flush()
+        session.add(
+            _untracked_suggestion(
+                kind=SuggestionKind.state_conflict, application_id=application.id
+            )
+        )
+        session.commit()
+        with pytest.raises(ValueError):
+            confirm(session, 1, job_id=job.id)
+
+
+def test_confirm_link_missing_job_raises(tmp_path: Path):
+    with _session(tmp_path) as session:
+        session.add(_untracked_suggestion())
+        session.commit()
+        with pytest.raises(LookupError):
+            confirm(session, 1, job_id=999)

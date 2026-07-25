@@ -31,10 +31,11 @@ def _plist_content(project_dir: Path, uv_path: str) -> bytes:
             "Label": LABEL,
             # `uv run` resolves the project env from WorkingDirectory; sync
             # runs first, then the digest reports whatever it changed.
+            # --if-due keeps the digest daily even though the job is hourly.
             "ProgramArguments": [
                 "/bin/sh",
                 "-c",
-                f'"{uv_path}" run copilot inbox sync && "{uv_path}" run copilot digest',
+                f'"{uv_path}" run copilot inbox sync && "{uv_path}" run copilot digest --if-due',
             ],
             "WorkingDirectory": str(project_dir),
             "StartInterval": INTERVAL_SECONDS,

@@ -77,8 +77,10 @@ Every third-party service this project talks to, what it's for, how it's authent
 - **Scopes:** `Mail.Send`, `Mail.Read`, `Mail.ReadWrite`, `MailboxSettings.ReadWrite` - all four exercised as of Phase 4 (`MailboxSettings.ReadWrite` is what allows creating master categories).
 - **Endpoints:**
   - `POST /v1.0/me/sendMail` - digest and alert emails
-  - `GET /v1.0/me/mailFolders/inbox/messages?$filter=receivedDateTime ge ...` - inbox sync fetch, paged via `@odata.nextLink`, with `Prefer: outlook.body-content-type="text"` for plain-text bodies
+  - `GET /v1.0/me/mailFolders/inbox/messages?$filter=receivedDateTime ge ...` - inbox sync fetch, paged via `@odata.nextLink`, with `Prefer: outlook.body-content-type="text"` for plain-text bodies; `$select` includes `internetMessageId`, the move-stable idempotency key (Graph ids change on every move)
   - `GET`/`POST /v1.0/me/mailFolders` - find/create the "Career Copilot" folder
+  - `GET`/`POST /v1.0/me/mailFolders/{id}/childFolders` - find/create the "Process" intake subfolder, plus `GET .../messages` on it with no date filter (D28: the folder's contents are the request)
+  - `GET /v1.0/me/mailFolders/{id}/messages` with a headers-only `$select` (no body) - the hourly sweep of the filed "Career Copilot" folder (D29); `GET /v1.0/me/messages/{id}` fetches the full body only for messages sync has no record of
   - `GET`/`POST /v1.0/me/outlook/masterCategories` - find/create per-type categories
   - `PATCH /v1.0/me/messages/{id}` (categories) then `POST /v1.0/me/messages/{id}/move` - filing; category is applied before the move because moving changes the message id
 - **Verified live:** sending 2026-07-24 (device-code login, `copilot email test`, `copilot digest` incl. the "nothing new" skip path). Inbox read/file endpoints: built 2026-07-25, live verification pending (Phase 4 verify step).

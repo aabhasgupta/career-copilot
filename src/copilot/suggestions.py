@@ -14,7 +14,7 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from copilot.applications import advance_from_email, get_or_create_application
+from copilot.applications import advance_from_email, get_or_create_application, state_relation
 from copilot.db.models import (
     Application,
     ApplicationState,
@@ -46,15 +46,30 @@ def pending_count(session: Session) -> int:
 
 
 def confirm(
-    session: Session, suggestion_id: int, provider: EmailProvider | None = None
+    session: Session,
+    suggestion_id: int,
+    provider: EmailProvider | None = None,
+    *,
+    job_id: int | None = None,
 ) -> Suggestion:
     """Apply a suggestion. `provider` files the email afterward when given;
     None (e.g. tests, offline) skips filing - the DB writes are the truth,
-    the mailbox is a mirror (D5), so filing later or never is safe."""
+    the mailbox is a mirror (D5), so filing later or never is safe.
+
+    `job_id` links an untracked-application suggestion to a job you already
+    track instead of creating stub records - the human knows which
+    application an email belongs to even when the correlator couldn't tell
+    (D28). Only meaningful for untracked suggestions; conflicts already know
+    their application."""
     suggestion = _pending(session, suggestion_id)
+    if job_id is not None and suggestion.kind != SuggestionKind.untracked_application:
+        raise ValueError("Only untracked-application suggestions can be linked to a job.")
 
     if suggestion.kind == SuggestionKind.untracked_application:
-        application = _create_tracked_application(session, suggestion)
+        if job_id is not None:
+            application = _link_to_existing_job(session, suggestion, job_id)
+        else:
+            application = _create_tracked_application(session, suggestion)
     else:  # state_conflict: the human sided with the email's implied state
         application = session.get(Application, suggestion.application_id)
         event = _record_email_event(session, suggestion, application.id)
@@ -121,12 +136,35 @@ def _create_tracked_application(session: Session, suggestion: Suggestion) -> App
     return application
 
 
+def _link_to_existing_job(session: Session, suggestion: Suggestion, job_id: int) -> Application:
+    """The human says "this email belongs to job N": record the email on that
+    application and advance it only if the email is plain forward progress -
+    anything else just becomes recorded history, never a silent overwrite
+    (same D24 rules the automatic path follows)."""
+    from copilot.email_agent.correlator import learn_domain
+    from copilot.email_agent.sync import ATS_SENDER_DOMAINS
+
+    job = session.get(Job, job_id)
+    if job is None:
+        raise LookupError(f"No job with id {job_id}")
+
+    application = get_or_create_application(session, job.id)
+    event = _record_email_event(session, suggestion, application.id)
+    proposed = suggestion.proposed_state
+    if proposed is not None and state_relation(application.state, proposed) == "forward":
+        advance_from_email(application, proposed, event.id)
+    if job.company is not None:
+        learn_domain(job.company, suggestion.sender or "", ATS_SENDER_DOMAINS)
+    return application
+
+
 def _record_email_event(
     session: Session, suggestion: Suggestion, application_id: int
 ) -> EmailEvent:
     event = EmailEvent(
         application_id=application_id,
         provider_message_id=suggestion.provider_message_id,
+        internet_message_id=suggestion.internet_message_id,
         provider_thread_id=suggestion.provider_thread_id or suggestion.provider_message_id,
         sender=suggestion.sender,
         subject=suggestion.subject,

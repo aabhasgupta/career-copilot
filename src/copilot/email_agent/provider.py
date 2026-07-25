@@ -32,6 +32,9 @@ class InboundMessage:
     subject: str
     body_text: str
     received_at: datetime
+    # RFC 5322 Message-ID header: stable across folder moves, unlike
+    # provider message ids - the idempotency key for manually-moved mail.
+    internet_message_id: str = ""
 
 
 class EmailProvider(ABC):
@@ -42,6 +45,26 @@ class EmailProvider(ABC):
     @abstractmethod
     def list_messages_since(self, since: datetime) -> list[InboundMessage]:
         """Inbox messages received after `since`, oldest first."""
+
+    @abstractmethod
+    def list_intake_messages(self) -> list[InboundMessage]:
+        """Messages the user manually placed in the intake area (the
+        "Career Copilot/Process" folder on Outlook; a label on Gmail) - the
+        human override for anything the pipeline missed. No date bound: a
+        human putting a message there IS the signal to look at it (D28)."""
+
+    @abstractmethod
+    def list_filed_headers(self) -> list[InboundMessage]:
+        """Headers only (empty body_text) of every message in the filed area
+        ("Career Copilot" on Outlook). Exists to catch the nearly-right
+        gesture of dropping new mail on the filed folder instead of the
+        intake subfolder (D29): sync dedupes these against its records and
+        fetches the full body (get_message) only for strangers, so the scan
+        stays cheap however large the filed area grows."""
+
+    @abstractmethod
+    def get_message(self, message_id: str) -> InboundMessage:
+        """One full message by provider id."""
 
     @abstractmethod
     def file_message(self, message_id: str, *, category: str) -> None:

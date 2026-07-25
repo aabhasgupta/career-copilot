@@ -97,8 +97,10 @@ uv run copilot schedule install      # hourly background sync + digest via launc
 ```
 
 See the README's "Inbox monitoring" section for what sync does and how the review queue
-works. First run looks back 7 days only - old mail is never touched. Pause anytime with
-`copilot schedule pause` or the dashboard's Inbox sync card.
+works. First run looks back 7 days only - old mail is never touched automatically, but you
+can drag any email (however old) into the **"Career Copilot/Process"** folder that sync
+creates, and the next run will process it. Pause anytime with `copilot schedule pause` or
+the dashboard's Inbox sync card.
 
 ### Troubleshooting
 

@@ -267,6 +267,53 @@ def test_job_queue_404_for_missing_job(tmp_path: Path):
     assert resp.status_code == 404
 
 
+def test_job_set_state_any_direction(tmp_path: Path):
+    client = _client_with_db(tmp_path)
+    list_resp = client.get("/jobs")
+    start = list_resp.text.index("/jobs/") + len("/jobs/")
+    job_id = list_resp.text[start : list_resp.text.index('"', start)]
+
+    resp = client.post(
+        f"/jobs/{job_id}/set-state", data={"state": "interviewing"}, follow_redirects=False
+    )
+    assert resp.status_code == 303
+    assert 'class="state">interviewing' in client.get(f"/jobs/{job_id}").text
+
+    # Backward on purpose: the manual override can undo a wrong state.
+    client.post(f"/jobs/{job_id}/set-state", data={"state": "applied"}, follow_redirects=False)
+    assert 'class="state">applied' in client.get(f"/jobs/{job_id}").text
+
+    assert client.post(
+        f"/jobs/{job_id}/set-state", data={"state": "bogus"}
+    ).status_code == 400
+    assert client.post(
+        "/jobs/99999/set-state", data={"state": "applied"}
+    ).status_code == 404
+
+
+def test_job_untrack_button_and_route(tmp_path: Path):
+    client = _client_with_db(tmp_path)
+    list_resp = client.get("/jobs")
+    start = list_resp.text.index("/jobs/") + len("/jobs/")
+    job_id = list_resp.text[start : list_resp.text.index('"', start)]
+
+    untrack_action = f'action="/jobs/{job_id}/untrack"'
+    # Untracked jobs offer no Untrack button (nothing to remove).
+    assert untrack_action not in client.get(f"/jobs/{job_id}").text
+
+    client.post(f"/jobs/{job_id}/queue", follow_redirects=False)
+    assert untrack_action in client.get(f"/jobs/{job_id}").text
+
+    resp = client.post(f"/jobs/{job_id}/untrack", follow_redirects=False)
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/jobs"
+    detail = client.get(f"/jobs/{job_id}")
+    assert 'class="state">found' in detail.text  # back to an untracked listing
+    assert untrack_action not in detail.text
+
+    assert client.post(f"/jobs/{job_id}/untrack").status_code == 404  # nothing left
+
+
 def test_suggestions_page_empty_state(tmp_path: Path):
     client, _ = _client(tmp_path)
     resp = client.get("/suggestions")
@@ -326,6 +373,70 @@ def test_suggestions_confirm_and_decline_flow(tmp_path: Path, monkeypatch):
 
         assert session.query(Company).filter_by(name="Acme").count() == 1
         assert session.query(Application).count() == 1  # only the confirmed one
+
+
+def test_suggestion_confirm_with_job_link(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("AZURE_CLIENT_ID", raising=False)
+    from datetime import datetime, timezone
+
+    from copilot.db import get_engine, get_session, init_db
+    from copilot.db.models import (
+        Application,
+        ApplicationState,
+        Company,
+        EmailEventType,
+        Job,
+        Suggestion,
+        SuggestionKind,
+    )
+
+    profile_path = tmp_path / "profile.yaml"
+    profile_path.write_text(PROFILE)
+    db_path = tmp_path / "test.db"
+    engine = get_engine(db_path)
+    init_db(engine)
+    with get_session(engine) as session:
+        company = Company(name="Stripe")
+        session.add(company)
+        session.flush()
+        job = Job(
+            company_id=company.id,
+            title="ML Engineer",
+            source="greenhouse",
+            apply_url="https://stripe.com/jobs/1",
+            dedupe_hash="h1",
+        )
+        session.add(job)
+        session.flush()
+        job_id = job.id
+        session.add(
+            Suggestion(
+                kind=SuggestionKind.untracked_application,
+                provider_message_id="m1",
+                sender="recruiter@stripe.com",
+                subject="Your interview",
+                body_text="Let's schedule.",
+                received_at=datetime.now(timezone.utc),
+                proposed_state=ApplicationState.interviewing,
+                classified_type=EmailEventType.interview_invite,
+            )
+        )
+        session.commit()
+    client = TestClient(
+        create_app(profile_path, db_path=db_path, packet_base_path=tmp_path / "packet.md")
+    )
+
+    assert 'name="job_id"' in client.get("/suggestions").text  # link field offered
+    resp = client.post(
+        "/suggestions/1/confirm", data={"job_id": str(job_id)}, follow_redirects=False
+    )
+    assert resp.status_code == 303
+
+    with get_session(engine) as session:
+        assert session.query(Company).count() == 1  # linked, not duplicated
+        application = session.query(Application).one()
+        assert application.job_id == job_id
+        assert application.state == ApplicationState.interviewing
 
 
 def test_suggestions_404_for_missing_or_resolved(tmp_path: Path):

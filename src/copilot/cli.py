@@ -522,6 +522,13 @@ def inbox_sync(
     )
     for action in result.actions:
         console.print(f"  - {action}")
+    if dry_run and result.skipped_subjects:
+        # A wrong pre-filter skip leaves no other trace - this list is the
+        # only way to audit its recall. Spot a job email here? It's a
+        # pattern we should add.
+        console.print("[dim]Skipped as not job mail:[/]")
+        for line in result.skipped_subjects:
+            console.print(f"  [dim]- {line}[/]")
     if result.suggestions or result.conflicts:
         console.print(
             f"[yellow]{result.suggestions + result.conflicts} suggestion(s) awaiting review[/]"
@@ -560,9 +567,19 @@ def inbox_review() -> None:
 
 
 @inbox_app.command("confirm")
-def inbox_confirm(suggestion_id: int) -> None:
+def inbox_confirm(
+    suggestion_id: int,
+    job: int | None = typer.Option(
+        None,
+        "--job",
+        help="Link this email to an existing tracked job (see 'copilot jobs "
+        "list') instead of creating a new company/job from the email - for "
+        "when you know which application it belongs to and the agent didn't.",
+    ),
+) -> None:
     """Apply a suggestion: create the tracked application (untracked kind)
-    or adopt the email's implied state (conflict kind), then file the email."""
+    or adopt the email's implied state (conflict kind), then file the email.
+    With --job, attach the email to a job you already track instead."""
     profile = load_profile()
 
     from copilot.db import get_engine, get_session
@@ -572,15 +589,18 @@ def inbox_confirm(suggestion_id: int) -> None:
     with get_session(get_engine()) as session:
         try:
             provider = get_provider(profile)
-            suggestion = confirm(session, suggestion_id, provider)
+            suggestion = confirm(session, suggestion_id, provider, job_id=job)
             session.commit()
         except (LookupError, ValueError) as exc:
             console.print(f"[red]{exc}[/]")
             raise typer.Exit(1) from exc
-    console.print(
-        f"[green]Confirmed.[/] {suggestion.company_name or '?'} is now tracked"
-        + (f" at state '{suggestion.proposed_state.value}'." if suggestion.proposed_state else ".")
-    )
+    if job is not None:
+        console.print(f"[green]Confirmed.[/] Email recorded against job {job}.")
+    else:
+        console.print(
+            f"[green]Confirmed.[/] {suggestion.company_name or '?'} is now tracked"
+            + (f" at state '{suggestion.proposed_state.value}'." if suggestion.proposed_state else ".")
+        )
 
 
 @inbox_app.command("decline")
@@ -666,6 +686,13 @@ def digest(
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Build and print the digest without sending or marking it sent."
     ),
+    if_due: bool = typer.Option(
+        False,
+        "--if-due",
+        help="Skip unless the last digest is 20+ hours old. The hourly "
+        "scheduled job uses this so the digest stays daily while inbox "
+        "sync stays hourly; running 'copilot digest' yourself never skips.",
+    ),
 ) -> None:
     """Email a digest of jobs discovered since the last digest, with fit_score
     80+ jobs called out (apply link, salary, location). Safe to run on any
@@ -679,7 +706,11 @@ def digest(
     profile = load_profile()
 
     from copilot.db import get_engine, get_session
-    from copilot.notify.digest import build_digest, mark_digest_sent
+    from copilot.notify.digest import build_digest, digest_due, mark_digest_sent
+
+    if if_due and not digest_due():
+        console.print("[dim]Digest not due yet (sent within the last 20h). Skipping.[/]")
+        return
 
     with get_session(get_engine()) as session:
         result = build_digest(session)
@@ -996,6 +1027,62 @@ def jobs_mark_applied(job_id: int) -> None:
         console.print(
             f"[green]Job {job_id} marked applied[/] at {application.applied_at:%Y-%m-%d %H:%M} UTC."
         )
+
+
+@jobs_app.command("untrack")
+def jobs_untrack(
+    job_id: int,
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt."),
+) -> None:
+    """Stop tracking a job - the undo for a wrong confirm or a mistaken
+    queue/mark-applied. Deletes the application, its history, and its email
+    records; a job created from a confirmed email disappears entirely, while
+    discovery-found jobs stay in the jobs list as untracked listings."""
+    from copilot.applications import untrack
+    from copilot.db import get_engine, get_session
+
+    if not yes and not typer.confirm(
+        f"Remove all tracking for job {job_id}? This deletes its application, "
+        "state history, and email records."
+    ):
+        raise typer.Exit(0)
+
+    with get_session(get_engine()) as session:
+        try:
+            removed = untrack(session, job_id)
+            session.commit()
+        except LookupError as exc:
+            console.print(f"[red]{exc}[/]")
+            raise typer.Exit(1) from exc
+    console.print(f"[green]Untracked.[/] Removed: {removed}.")
+
+
+@jobs_app.command("set-state")
+def jobs_set_state(job_id: int, state: str) -> None:
+    """Set an application to any state, in any direction - the manual
+    escape hatch for reality Copilot missed (an email that never arrived, a
+    phone call) or for undoing a wrong state. Records who said so, so email
+    conflict detection (D24) keeps working."""
+    from sqlalchemy import select
+
+    from copilot.applications import set_state
+    from copilot.db import get_engine, get_session
+    from copilot.db.models import ApplicationState, Job
+
+    try:
+        to_state = ApplicationState(state)
+    except ValueError:
+        valid = ", ".join(s.value for s in ApplicationState)
+        console.print(f"[red]'{state}' is not a state.[/] Valid: {valid}")
+        raise typer.Exit(1) from None
+
+    with get_session(get_engine()) as session:
+        if session.scalar(select(Job).where(Job.id == job_id)) is None:
+            console.print(f"[red]No job with id {job_id}.[/]")
+            raise typer.Exit(1)
+        application = set_state(session, job_id, to_state)
+        session.commit()
+        console.print(f"[green]Job {job_id} is now {application.state.value}.[/]")
 
 
 if __name__ == "__main__":

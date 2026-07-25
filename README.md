@@ -122,6 +122,8 @@ Nothing is sent when there's nothing new since the last send.
 uv run copilot packet base           # (re)generate data/packet_base.md
 uv run copilot jobs queue 42         # declare intent to apply
 uv run copilot jobs mark-applied 42  # record that you actually applied
+uv run copilot jobs set-state 42 interviewing  # record any state, any direction
+uv run copilot jobs untrack 42       # undo tracking something by mistake
 ```
 
 Career Copilot prepares reusable application content - it never fills out or submits a form
@@ -133,7 +135,10 @@ it never happens automatically. The dashboard has the same button on the Prefere
 
 `jobs queue`/`jobs mark-applied` (also buttons on a job's detail page in the dashboard) just
 record what you did - queuing never gets auto-created, and marking applied never fires until you
-click it. See **[docs/APPLYING.md](docs/APPLYING.md)** for how to actually get the packet's
+click it. `jobs untrack` is the undo: it deletes the application with its state history and
+email records (after a confirmation prompt); a job that only exists because you confirmed an
+email suggestion disappears entirely, while discovery-found jobs stay in the jobs list as
+untracked listings. See **[docs/APPLYING.md](docs/APPLYING.md)** for how to actually get the packet's
 content into an application: by hand, or via a free autofill tool like Simplify.
 
 ## Inbox monitoring
@@ -149,20 +154,56 @@ uv run copilot inbox decline 4       # no - never ask about this email again
 Inbox monitoring needs the same one-time email setup as the digest - see
 **[docs/EMAIL_SETUP.md](docs/EMAIL_SETUP.md)** (the four Graph permissions it lists cover both).
 
-`inbox sync` reads recent inbox mail, keeps only ATS/recruiting-looking messages (a cheap
-pattern pre-filter - newsletters and receipts are never sent to Claude), matches each against
-your tracked applications, and classifies it (confirmation, rejection, interview invite, online
-assessment, recruiter screen). Matched emails move into a "Career Copilot" folder in Outlook,
-tagged with a category per type, and the application's state advances automatically when the
-email agrees with what's stored. Interview invites and online assessments also trigger an
-immediate alert email; everything else lands in the daily digest.
+**The idea in one sentence:** companies reply to your applications by email, so Copilot reads
+your inbox every hour and does the bookkeeping - states stay current without you updating
+anything, and the two decisions that are genuinely yours get queued for you instead of guessed.
 
-Two things are never done silently: an email about a job you applied to *outside* Career
-Copilot becomes a suggestion (confirm to start tracking it, decline to ignore it forever), and
-an email that *contradicts* a state you set yourself becomes a flagged conflict for you to
-resolve - the email agent never overrules you, and you never lose what it found
-(`docs/DECISIONS.md` D20, D24). Suggestions live in `copilot inbox review` and the dashboard's
-**Suggestions** tab.
+### Your mailbox after setup
+
+Sync creates two folders on first use; the color categories are Outlook tags, not folders:
+
+```
+Inbox                    <- read hourly; only NEW mail since the last run is looked at
+Career Copilot           <- processed job mail lands here, color-tagged by type
+└── Process              <- YOUR drop zone: drag any email here and the next
+                            sync will process it, no matter how old it is
+```
+
+Everything else in your mailbox - other folders, Sent, archives - is never read. And the
+folders are just a mirror for your convenience: the real record is the local database, so
+moving or deleting filed mail never breaks tracking.
+
+### What to expect, scenario by scenario
+
+- **A company replies about a job you're tracking** (confirmation, rejection, recruiter
+  outreach): the application's state advances by itself, the email is filed and tagged, and
+  the change shows up in your daily digest. This is the default case and needs nothing from
+  you - even when the reply is a bare "Re: Next steps" with no company name in it, thread
+  matching keeps the conversation connected.
+- **An interview invite or online assessment arrives**: same as above, plus an immediate macOS
+  desktop notification and an alert email - these two are time-sensitive, everything else
+  waits for the digest.
+- **An email about a job you applied to outside Copilot**: nothing is touched. It becomes a
+  *suggestion* in `copilot inbox review` (or the dashboard's Suggestions tab): **confirm** to
+  start tracking that application, **decline** to never be asked about that email again, or
+  confirm with `--job <id>` (CLI) / the "job #" field (dashboard) to attach the email to a job
+  already in your list - for when you know where it belongs and the agent couldn't tell.
+- **An email contradicts a state you set yourself** (say you marked a job rejected and an
+  interview invite arrives): Copilot never overrules you. It records the email and flags the
+  conflict in the same review queue - you pick which side is right.
+- **The filter missed a job email**: drag it into **Career Copilot/Process** and the next sync
+  handles it - old mail never triggers an alert, since that clock has already run. (Dropped it
+  on the parent folder by mistake? Also fine - that's swept too.) To *check* for misses,
+  `inbox sync --dry-run` lists every skipped subject.
+- **You made a mistake**: `copilot jobs set-state <id> <state>` records any state in any
+  direction (including backward), and `copilot jobs untrack <id>` removes a tracking entirely -
+  both also available on the job's dashboard page.
+
+What it will never do: send or reply to anything on its own, change a state you set without
+asking, or touch an email it isn't sure about. Cost-wise it's built cheapest-first: newsletters
+and receipts are filtered out by patterns before any Claude call, each genuinely new job email
+costs one small classification call exactly once, and a quiet inbox costs nothing at all. The
+full design reasoning lives in `docs/DECISIONS.md` (D20, D24, D26-D29).
 
 ```sh
 uv run copilot schedule install    # hourly background sync + digest via launchd
@@ -173,8 +214,10 @@ uv run copilot schedule uninstall
 ```
 
 Scheduling uses launchd rather than cron so a run missed while the laptop was asleep fires on
-wake instead of being skipped. Logs go to `data/logs/`. The dashboard's Preferences page has an
-"Inbox sync" card showing the schedule's status with the same Pause/Resume controls.
+wake instead of being skipped. The job runs hourly, but the digest inside it self-gates to at
+most one email a day (`copilot digest --if-due`) - sync stays timely without your own digest
+turning into hourly notifications. Logs go to `data/logs/`. The dashboard's Preferences page
+has an "Inbox sync" card showing the schedule's status with the same Pause/Resume controls.
 
 ## Development
 

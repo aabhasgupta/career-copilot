@@ -31,8 +31,30 @@ SCOPES = ["Mail.Send", "Mail.Read", "Mail.ReadWrite", "MailboxSettings.ReadWrite
 GRAPH = "https://graph.microsoft.com/v1.0"
 SEND_MAIL_URL = f"{GRAPH}/me/sendMail"
 COPILOT_FOLDER = "Career Copilot"
+# Child of COPILOT_FOLDER. The human override lane: drag any email here and
+# the next sync processes it, bypassing the watermark and pre-filter (D28).
+INTAKE_FOLDER = "Process"
 # Outlook category preset colors; assignment order is arbitrary, just stable.
 CATEGORY_COLOR = "preset9"
+
+_MESSAGE_SELECT = "$select=id,conversationId,internetMessageId,from,subject,body,receivedDateTime"
+# Same minus the body - for the filed-area scan, where almost every message
+# is already known and downloading bodies hourly would be pure waste.
+_HEADER_SELECT = "$select=id,conversationId,internetMessageId,from,subject,receivedDateTime"
+
+
+def _parse_message(m: dict) -> InboundMessage:
+    addr = (m.get("from") or {}).get("emailAddress") or {}
+    return InboundMessage(
+        message_id=m["id"],
+        thread_id=m.get("conversationId") or m["id"],
+        sender=(addr.get("address") or "").lower(),
+        sender_name=addr.get("name") or "",
+        subject=m.get("subject") or "",
+        body_text=(m.get("body") or {}).get("content") or "",
+        received_at=datetime.fromisoformat(m["receivedDateTime"].replace("Z", "+00:00")),
+        internet_message_id=m.get("internetMessageId") or "",
+    )
 
 
 def _load_cache(cache_path: Path) -> msal.SerializableTokenCache:
@@ -92,8 +114,9 @@ class OutlookProvider(EmailProvider):
         self.client_id = client_id
         self.cache_path = cache_path
         # Resolved lazily and memoized per process: the Career Copilot folder
-        # id and the set of category names known to exist.
+        # id, the intake subfolder id, and the category names known to exist.
         self._folder_id: str | None = None
+        self._intake_folder_id: str | None = None
         self._known_categories: set[str] | None = None
 
     def _headers(self, **extra: str) -> dict[str, str]:
@@ -119,31 +142,38 @@ class OutlookProvider(EmailProvider):
         url = (
             f"{GRAPH}/me/mailFolders/inbox/messages"
             f"?$filter=receivedDateTime ge {since.strftime('%Y-%m-%dT%H:%M:%SZ')}"
-            "&$orderby=receivedDateTime asc"
-            "&$select=id,conversationId,from,subject,body,receivedDateTime"
-            "&$top=50"
+            f"&$orderby=receivedDateTime asc&{_MESSAGE_SELECT}&$top=50"
         )
+        return self._fetch_messages(url)
+
+    def list_intake_messages(self) -> list[InboundMessage]:
+        # No receivedDateTime filter: the folder's contents are the request,
+        # however old the mail is.
+        intake_id = self._ensure_intake_folder()
+        url = f"{GRAPH}/me/mailFolders/{intake_id}/messages?{_MESSAGE_SELECT}&$top=50"
+        return self._fetch_messages(url)
+
+    def list_filed_headers(self) -> list[InboundMessage]:
+        folder_id = self._ensure_folder()
+        url = f"{GRAPH}/me/mailFolders/{folder_id}/messages?{_HEADER_SELECT}&$top=50"
+        return self._fetch_messages(url)
+
+    def get_message(self, message_id: str) -> InboundMessage:
+        headers = self._headers(Prefer='outlook.body-content-type="text"')
+        resp = httpx.get(
+            f"{GRAPH}/me/messages/{message_id}?{_MESSAGE_SELECT}", headers=headers, timeout=30
+        )
+        resp.raise_for_status()
+        return _parse_message(resp.json())
+
+    def _fetch_messages(self, url: str) -> list[InboundMessage]:
         headers = self._headers(Prefer='outlook.body-content-type="text"')
         messages: list[InboundMessage] = []
         while url:
             resp = httpx.get(url, headers=headers, timeout=30)
             resp.raise_for_status()
             data = resp.json()
-            for m in data.get("value", []):
-                addr = (m.get("from") or {}).get("emailAddress") or {}
-                messages.append(
-                    InboundMessage(
-                        message_id=m["id"],
-                        thread_id=m.get("conversationId") or m["id"],
-                        sender=(addr.get("address") or "").lower(),
-                        sender_name=addr.get("name") or "",
-                        subject=m.get("subject") or "",
-                        body_text=(m.get("body") or {}).get("content") or "",
-                        received_at=datetime.fromisoformat(
-                            m["receivedDateTime"].replace("Z", "+00:00")
-                        ),
-                    )
-                )
+            messages.extend(_parse_message(m) for m in data.get("value", []))
             url = data.get("@odata.nextLink")
         return messages
 
@@ -170,6 +200,32 @@ class OutlookProvider(EmailProvider):
             resp.raise_for_status()
             self._folder_id = resp.json()["id"]
         return self._folder_id
+
+    def _ensure_intake_folder(self) -> str:
+        if self._intake_folder_id:
+            return self._intake_folder_id
+        parent_id = self._ensure_folder()
+        headers = self._headers()
+        resp = httpx.get(
+            f"{GRAPH}/me/mailFolders/{parent_id}/childFolders"
+            f"?$filter=displayName eq '{INTAKE_FOLDER}'",
+            headers=headers,
+            timeout=30,
+        )
+        resp.raise_for_status()
+        existing = resp.json().get("value", [])
+        if existing:
+            self._intake_folder_id = existing[0]["id"]
+        else:
+            resp = httpx.post(
+                f"{GRAPH}/me/mailFolders/{parent_id}/childFolders",
+                headers=headers,
+                json={"displayName": INTAKE_FOLDER},
+                timeout=30,
+            )
+            resp.raise_for_status()
+            self._intake_folder_id = resp.json()["id"]
+        return self._intake_folder_id
 
     def _ensure_category(self, category: str) -> None:
         headers = self._headers()

@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from copilot.db.models import Application, Company, Job
+from copilot.db.models import Application, Company, EmailEvent, Job
 from copilot.email_agent.provider import InboundMessage
 from copilot.scoring.sponsorship import normalize_company_name
 
@@ -26,7 +26,30 @@ class Candidate:
     application: Application
     job: Job
     company: Company
-    matched_on: str  # "domain" or "name"
+    matched_on: str  # "thread", "domain", or "name"
+
+
+def find_thread_candidates(session: Session, message: InboundMessage) -> list[Candidate]:
+    """Applications whose stored email events share this message's thread id.
+
+    The strongest correlation signal there is: a reply in a conversation we
+    already classified belongs to the same application, no matter what the
+    subject mutated into ("Re: Next steps" carries no company name and no ATS
+    domain, but the thread id survives)."""
+    if not message.thread_id:
+        return []
+    rows = session.execute(
+        select(Application, Job, Company)
+        .join(EmailEvent, EmailEvent.application_id == Application.id)
+        .join(Job, Application.job_id == Job.id)
+        .join(Company, Job.company_id == Company.id)
+        .where(EmailEvent.provider_thread_id == message.thread_id)
+        .distinct()
+    ).all()
+    return [
+        Candidate(application, job, company, matched_on="thread")
+        for application, job, company in rows
+    ]
 
 
 def find_candidates(session: Session, message: InboundMessage) -> list[Candidate]:

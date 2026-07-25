@@ -35,6 +35,22 @@ from copilot.suggestions import list_pending
 DIGEST_STATE_PATH = DATA_DIR / "digest_state.json"
 HIGH_FIT_THRESHOLD = 70
 
+# The scheduled job runs hourly (sync needs to be timely) but the digest is a
+# daily summary - without a gate it would degrade into hourly change
+# notifications, exactly what D26 reserved for interview invites and OAs.
+# 20h rather than 24h so a run that lands slightly earlier than yesterday's
+# doesn't skip a whole day.
+MIN_INTERVAL_HOURS = 20
+
+
+def digest_due(state_path: Path = DIGEST_STATE_PATH) -> bool:
+    """True when enough time has passed since the last send for a scheduled
+    digest to fire. Manual `copilot digest` ignores this - asking is due."""
+    if not state_path.exists():
+        return True
+    last = datetime.fromisoformat(json.loads(state_path.read_text())["last_sent_at"])
+    return datetime.now(timezone.utc) - last >= timedelta(hours=MIN_INTERVAL_HOURS)
+
 
 def _last_sent_at(state_path: Path) -> datetime:
     if state_path.exists():

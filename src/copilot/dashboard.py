@@ -31,7 +31,7 @@ from sqlalchemy import select
 
 from copilot.config import Profile
 from copilot.db import get_engine, get_session, init_db
-from copilot.db.models import Application, Job
+from copilot.db.models import Application, ApplicationState, Job
 from copilot.formatting import format_posted, format_salary
 from copilot.geocode import Geocoder
 from copilot.industry import Industry
@@ -437,10 +437,17 @@ def _suggestion_card(s) -> str:
             f"This email implies <b>{proposed}</b>, which contradicts the state you set. "
             "Confirm to adopt the email's state; decline to keep yours."
         )
+        link_field = ""
     else:
         explain = (
             f"This looks like an application you made outside Career Copilot. Confirm to "
-            f"track it (state: <b>{proposed}</b>); decline to ignore this email permanently."
+            f"track it (state: <b>{proposed}</b>); decline to ignore this email permanently. "
+            "If it actually belongs to a job already in your Jobs list, enter that job's # "
+            "before confirming and the email is recorded there instead."
+        )
+        link_field = (
+            '<input type="number" name="job_id" min="1" placeholder="job # (optional)" '
+            'style="width:10rem"> '
         )
     sender = html.escape(s.sender or "")
     subject = html.escape(s.subject or "")
@@ -453,7 +460,7 @@ Subject: {subject}
 
 {snippet}</div>
 <div class="btn-row" style="margin-top:.8rem">
-<form method="post" action="/suggestions/{s.id}/confirm"><button type="submit">Confirm</button></form>
+<form method="post" action="/suggestions/{s.id}/confirm">{link_field}<button type="submit">Confirm</button></form>
 <form method="post" action="/suggestions/{s.id}/decline"><button type="submit" class="secondary">Decline</button></form>
 </div>
 </div>"""
@@ -472,6 +479,20 @@ def _suggestions_body(pending: list) -> str:
 
 def _application_actions(job_id: int, application: Application | None) -> str:
     state = application.state.value if application else "found"
+    options = "".join(
+        f'<option value="{s.value}"{" selected" if s.value == state else ""}>{s.value}</option>'
+        for s in ApplicationState
+    )
+    # Only tracked jobs can be untracked; the inline confirm keeps the one
+    # destructive action in the app behind a deliberate second click.
+    untrack_form = (
+        f"""<form method="post" action="/jobs/{job_id}/untrack"
+  onsubmit="return confirm('Remove all tracking for this job? This deletes its application, state history, and email records.')">
+  <button type="submit" class="secondary">Untrack</button>
+</form>"""
+        if application is not None
+        else ""
+    )
     return f"""<div class="card">
 <h2>Application status: <span class="state">{state}</span></h2>
 <div class="btn-row">
@@ -481,9 +502,17 @@ def _application_actions(job_id: int, application: Application | None) -> str:
 <form method="post" action="/jobs/{job_id}/mark-applied">
   <button type="submit">Mark applied</button>
 </form>
+<form method="post" action="/jobs/{job_id}/set-state">
+  <select name="state">{options}</select>
+  <button type="submit" class="secondary">Set state</button>
+</form>
+{untrack_form}
 </div>
 <p class="footnote">These only record what you did yourself - Career Copilot never
-submits an application.</p>
+submits an application. "Set state" is the manual override for anything the
+email agent missed, and can move in any direction - including undoing a wrong
+state. "Untrack" removes the application entirely (state history and email
+records included) - the undo for tracking something by mistake.</p>
 </div>"""
 
 
@@ -664,6 +693,35 @@ def create_app(
             session.commit()
         return RedirectResponse(f"/jobs/{job_id}", status_code=303)
 
+    @app.post("/jobs/{job_id}/untrack")
+    def job_untrack(job_id: int):
+        from copilot.applications import untrack
+
+        with get_session(get_engine(db_path)) as session:
+            try:
+                untrack(session, job_id)
+                session.commit()
+            except LookupError as exc:
+                return HTMLResponse(str(exc), status_code=404)
+        # The job page may no longer exist (email-created jobs are deleted
+        # with their tracking), so land on the list either way.
+        return RedirectResponse("/jobs", status_code=303)
+
+    @app.post("/jobs/{job_id}/set-state")
+    def job_set_state(job_id: int, state: str = Form(...)):
+        from copilot.applications import set_state
+
+        try:
+            to_state = ApplicationState(state)
+        except ValueError:
+            return HTMLResponse(f"'{html.escape(state)}' is not a state.", status_code=400)
+        with get_session(get_engine(db_path)) as session:
+            if session.scalar(select(Job).where(Job.id == job_id)) is None:
+                return HTMLResponse(f"No job with id {job_id}.", status_code=404)
+            set_state(session, job_id, to_state)
+            session.commit()
+        return RedirectResponse(f"/jobs/{job_id}", status_code=303)
+
     @app.post("/schedule/pause")
     def schedule_pause():
         from copilot.schedule.launchd import pause
@@ -710,12 +768,14 @@ def create_app(
             return None
 
     @app.post("/suggestions/{suggestion_id}/confirm")
-    def suggestion_confirm(suggestion_id: int):
+    def suggestion_confirm(suggestion_id: int, job_id: str = Form("")):
         from copilot.suggestions import confirm
 
+        # job_id arrives as "" when the optional link field is left empty.
+        linked_job_id = int(job_id) if job_id.strip() else None
         with get_session(get_engine(db_path)) as session:
             try:
-                confirm(session, suggestion_id, _try_provider())
+                confirm(session, suggestion_id, _try_provider(), job_id=linked_job_id)
                 session.commit()
             except (LookupError, ValueError) as exc:
                 return HTMLResponse(str(exc), status_code=404)

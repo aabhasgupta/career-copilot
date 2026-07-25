@@ -19,7 +19,15 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from copilot.db.models import Application, ApplicationState, ApplicationStateEvent, utcnow
+from copilot.db.models import (
+    Application,
+    ApplicationState,
+    ApplicationStateEvent,
+    Job,
+    Suggestion,
+    SuggestionStatus,
+    utcnow,
+)
 
 MANUAL = "manual"
 
@@ -89,6 +97,73 @@ def mark_applied(session: Session, job_id: int) -> Application:
     application.state = ApplicationState.applied
     application.applied_at = utcnow()
     return application
+
+
+def set_state(session: Session, job_id: int, to_state: ApplicationState) -> Application:
+    """Manual override to any state, in any direction - the escape hatch for
+    reality Copilot missed (an email that never arrived, a phone call, an
+    accidental click being undone). Unlike queue/mark_applied it can move
+    backward: it records what the human says is true, and the manual-tagged
+    history row keeps D24's conflict rules working afterward."""
+    application = get_or_create_application(session, job_id)
+    _record_transition(application, to_state, source=MANUAL)
+    application.state = to_state
+    if to_state == ApplicationState.applied and application.applied_at is None:
+        application.applied_at = utcnow()
+    return application
+
+
+def untrack(session: Session, job_id: int) -> str:
+    """Remove all tracking for a job - the undo for a wrong confirm or a
+    mistaken queue/mark-applied (D28). Deletes the application with its state
+    history and email events; a job that only exists because an email was
+    confirmed (source="email") is deleted too, along with its company if
+    nothing else references it. Discovery-found jobs stay in the jobs list.
+
+    No resurrection: suggestion rows are kept (their message ids keep sync's
+    idempotency intact), just detached and closed out. Returns a short
+    human-readable summary of what was removed."""
+    job = session.get(Job, job_id)
+    if job is None:
+        raise LookupError(f"No job with id {job_id}")
+    application = session.scalar(select(Application).where(Application.job_id == job_id))
+    if application is None:
+        raise LookupError(f"Job {job_id} isn't tracked - nothing to untrack.")
+
+    for suggestion in session.scalars(
+        select(Suggestion).where(Suggestion.application_id == application.id)
+    ):
+        suggestion.application_id = None
+        if suggestion.status == SuggestionStatus.pending:
+            # A pending conflict about an application that no longer exists
+            # has nothing left to decide.
+            suggestion.status = SuggestionStatus.declined
+            suggestion.resolved_at = utcnow()
+
+    for event in list(application.email_events):
+        session.delete(event)
+    for history_row in list(application.state_history):
+        session.delete(history_row)
+    session.delete(application)
+
+    removed = f"application for job {job_id} ({job.title})"
+    if job.source == "email":
+        company = job.company
+        session.delete(job)
+        session.flush()
+        # Re-query rather than trusting company.jobs: the loaded collection
+        # can still hold the just-deleted row.
+        other_jobs = (
+            None
+            if company is None
+            else session.scalar(select(Job.id).where(Job.company_id == company.id))
+        )
+        if company is not None and other_jobs is None:
+            session.delete(company)
+            removed += f", the email-created job and company ({company.name})"
+        else:
+            removed += ", the email-created job"
+    return removed
 
 
 def advance_from_email(

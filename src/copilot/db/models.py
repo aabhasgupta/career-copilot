@@ -209,11 +209,16 @@ class EmailEvent(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     application_id: Mapped[int] = mapped_column(ForeignKey("applications.id"), index=True)
-    # Idempotency key for inbox sync: a message id already present here (or in
+    # Idempotency keys for inbox sync: a message already present here (or in
     # suggestions) is never processed twice. Uniqueness enforced in code, not
     # DDL - the additive micro-migration can't add constraints to existing
     # tables, and single-writer SQLite makes check-before-insert safe.
+    # provider_message_id is the Graph/API id (needed to act on the message,
+    # but Outlook changes it on every move); internet_message_id is the
+    # RFC 5322 Message-ID header, stable across moves - it's what keeps a
+    # manually-moved email from being processed twice (intake folder, D28).
     provider_message_id: Mapped[str | None] = mapped_column(String(255), index=True)
+    internet_message_id: Mapped[str | None] = mapped_column(String(512), index=True)
     provider_thread_id: Mapped[str] = mapped_column(String(255))
     sender: Mapped[str | None] = mapped_column(String(255))
     subject: Mapped[str | None] = mapped_column(Text)
@@ -244,8 +249,10 @@ class Suggestion(Base):
     status: Mapped[SuggestionStatus] = mapped_column(
         Enum(SuggestionStatus), default=SuggestionStatus.pending, index=True
     )
-    # Dedupe key: one suggestion per inbox message, ever.
+    # Dedupe keys: one suggestion per inbox message, ever (see EmailEvent for
+    # why there are two ids).
     provider_message_id: Mapped[str] = mapped_column(String(255), index=True)
+    internet_message_id: Mapped[str | None] = mapped_column(String(512), index=True)
     provider_thread_id: Mapped[str | None] = mapped_column(String(255))
     # Set for state_conflict; null for untracked_application (no application
     # exists yet - confirming is what creates it).

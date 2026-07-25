@@ -3,7 +3,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from copilot.db.models import Company, Job
-from copilot.notify.digest import HIGH_FIT_THRESHOLD, build_digest, mark_digest_sent
+from copilot.notify.digest import (
+    HIGH_FIT_THRESHOLD,
+    build_digest,
+    digest_due,
+    mark_digest_sent,
+)
 
 
 def _job(**kwargs) -> Job:
@@ -95,6 +100,18 @@ def test_build_digest_respects_last_sent_state(tmp_path: Path):
         # A job created before the last digest was sent must not reappear.
         result = build_digest(session, state_path=state_path)
         assert result is None
+
+
+def test_digest_due_gates_hourly_schedule_to_daily(tmp_path: Path):
+    state_path = tmp_path / "state.json"
+    assert digest_due(state_path)  # never sent
+
+    mark_digest_sent(state_path)
+    assert not digest_due(state_path)  # just sent - the hourly job must skip
+
+    sent_yesterday = datetime.now(timezone.utc) - timedelta(hours=21)
+    state_path.write_text(json.dumps({"last_sent_at": sent_yesterday.isoformat()}))
+    assert digest_due(state_path)
 
 
 def test_no_high_fit_jobs_shows_fallback_message(tmp_path: Path):
