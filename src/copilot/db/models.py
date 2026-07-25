@@ -72,6 +72,21 @@ class EmailEventType(str, enum.Enum):
     other = "other"
 
 
+class SuggestionKind(str, enum.Enum):
+    # Job-related email that correlates to nothing tracked (D20): confirming
+    # creates a stub Company/Job/Application; declining leaves everything as-is.
+    untracked_application = "untracked_application"
+    # Email implies a state that contradicts a human-set one (D24): confirming
+    # applies the email's implied state; declining keeps the manual state.
+    state_conflict = "state_conflict"
+
+
+class SuggestionStatus(str, enum.Enum):
+    pending = "pending"
+    confirmed = "confirmed"
+    declined = "declined"
+
+
 class Company(Base):
     __tablename__ = "companies"
 
@@ -85,6 +100,10 @@ class Company(Base):
     )
     # Classified once by the LLM from a controlled vocabulary; see industry.py
     industry: Mapped[str | None] = mapped_column(String(32))
+    # Email domain (e.g. "stripe.com"), learned only from confirmed evidence -
+    # a confirmed inbox suggestion or a high-confidence correlation - never
+    # guessed from the name. Strengthens future deterministic email matching.
+    domain: Mapped[str | None] = mapped_column(String(255))
     h1b_filing_count: Mapped[int | None] = mapped_column(Integer)
     sponsorship_evidence: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -152,18 +171,98 @@ class Application(Base):
 
     job: Mapped[Job] = relationship(back_populates="application")
     email_events: Mapped[list[EmailEvent]] = relationship(back_populates="application")
+    state_history: Mapped[list[ApplicationStateEvent]] = relationship(
+        back_populates="application", order_by="ApplicationStateEvent.created_at"
+    )
+
+
+class ApplicationStateEvent(Base):
+    """Append-only log of Application.state transitions, tagged by who caused
+    them. Application.state alone can't answer "was this human-set or
+    system-set" - needed once Phase 4's email agent becomes a second writer
+    to the same field, so a genuine conflict can be told apart from plain
+    forward progress (docs/DECISIONS.md D24)."""
+
+    __tablename__ = "application_state_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    application_id: Mapped[int] = mapped_column(ForeignKey("applications.id"), index=True)
+    from_state: Mapped[ApplicationState | None] = mapped_column(Enum(ApplicationState))
+    to_state: Mapped[ApplicationState] = mapped_column(Enum(ApplicationState))
+    # "manual" (CLI/dashboard action) or "email:<email_events.id>" once Phase 4 writes here.
+    source: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    application: Mapped[Application] = relationship(back_populates="state_history")
 
 
 class EmailEvent(Base):
+    """One classified, correlated inbox email. Only ever created once the
+    email is tied to a real application - an uncorrelated message lives in
+    `suggestions` instead until confirmed (D20), which is why application_id
+    stays a required FK. The full body is stored locally (user's call,
+    2026-07-25): the review surfaces show complete evidence, and later
+    features (reply drafting, re-classification) reuse it without re-fetching.
+    """
+
     __tablename__ = "email_events"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     application_id: Mapped[int] = mapped_column(ForeignKey("applications.id"), index=True)
+    # Idempotency key for inbox sync: a message id already present here (or in
+    # suggestions) is never processed twice. Uniqueness enforced in code, not
+    # DDL - the additive micro-migration can't add constraints to existing
+    # tables, and single-writer SQLite makes check-before-insert safe.
+    provider_message_id: Mapped[str | None] = mapped_column(String(255), index=True)
     provider_thread_id: Mapped[str] = mapped_column(String(255))
+    sender: Mapped[str | None] = mapped_column(String(255))
+    subject: Mapped[str | None] = mapped_column(Text)
+    body_text: Mapped[str | None] = mapped_column(Text)
     classified_type: Mapped[EmailEventType] = mapped_column(
         Enum(EmailEventType), default=EmailEventType.other
     )
+    # The application state this email implies (e.g. interview_invite ->
+    # interviewing); None when the type carries no state signal ("other").
+    implied_state: Mapped[ApplicationState | None] = mapped_column(Enum(ApplicationState))
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     application: Mapped[Application] = relationship(back_populates="email_events")
+
+
+class Suggestion(Base):
+    """Persistent review queue for inbox findings that need a human decision:
+    untracked applications (D20) and state conflicts (D24). Rows survive
+    across sync runs so an answer is permanent - declining once means never
+    being asked about that message again - and pending items aren't
+    re-derived every hour."""
+
+    __tablename__ = "suggestions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    kind: Mapped[SuggestionKind] = mapped_column(Enum(SuggestionKind))
+    status: Mapped[SuggestionStatus] = mapped_column(
+        Enum(SuggestionStatus), default=SuggestionStatus.pending, index=True
+    )
+    # Dedupe key: one suggestion per inbox message, ever.
+    provider_message_id: Mapped[str] = mapped_column(String(255), index=True)
+    provider_thread_id: Mapped[str | None] = mapped_column(String(255))
+    # Set for state_conflict; null for untracked_application (no application
+    # exists yet - confirming is what creates it).
+    application_id: Mapped[int | None] = mapped_column(ForeignKey("applications.id"))
+    # Evidence shown on the review surfaces.
+    sender: Mapped[str | None] = mapped_column(String(255))
+    subject: Mapped[str | None] = mapped_column(Text)
+    body_text: Mapped[str | None] = mapped_column(Text)
+    received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # What confirming would do: create Company/Job/Application at
+    # proposed_state (untracked_application) or move the existing application
+    # to proposed_state (state_conflict).
+    company_name: Mapped[str | None] = mapped_column(String(255))
+    job_title: Mapped[str | None] = mapped_column(String(255))
+    proposed_state: Mapped[ApplicationState | None] = mapped_column(Enum(ApplicationState))
+    classified_type: Mapped[EmailEventType | None] = mapped_column(Enum(EmailEventType))
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    application: Mapped[Application | None] = relationship()

@@ -12,14 +12,42 @@ against, and building it now would be untested, speculative code.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from datetime import datetime
 
 from copilot.config import EmailProviderName, Profile
+
+
+@dataclass
+class InboundMessage:
+    """Provider-agnostic shape of a received email. The interface speaks
+    Copilot's vocabulary, not any one provider's - "file into the Career
+    Copilot area with a type label" maps to folder+category on Outlook and
+    would map to labels on Gmail."""
+
+    message_id: str
+    thread_id: str
+    sender: str  # bare address, lowercased (e.g. "no-reply@greenhouse.io")
+    sender_name: str  # display name (e.g. "Stripe Recruiting"), may be ""
+    subject: str
+    body_text: str
+    received_at: datetime
 
 
 class EmailProvider(ABC):
     @abstractmethod
     def send_mail(self, *, to: str, subject: str, body_html: str) -> None:
         """Send an HTML email. Raises on failure."""
+
+    @abstractmethod
+    def list_messages_since(self, since: datetime) -> list[InboundMessage]:
+        """Inbox messages received after `since`, oldest first."""
+
+    @abstractmethod
+    def file_message(self, message_id: str, *, category: str) -> None:
+        """File a message into the Career Copilot area labeled with
+        `category` (e.g. "Interview Invite"), creating whatever
+        folder/label/category structure that requires on first use."""
 
 
 def get_provider(profile: Profile) -> EmailProvider:

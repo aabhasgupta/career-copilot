@@ -56,3 +56,25 @@ def test_get_or_create_application_reuses_existing_row(tmp_path: Path):
         first = get_or_create_application(session, job_id)
         second = get_or_create_application(session, job_id)
         assert first.id == second.id
+
+
+def test_queue_and_mark_applied_record_manual_state_history(tmp_path: Path):
+    with _session(tmp_path) as session:
+        job_id = _job(session)
+        application = queue(session, job_id)
+        mark_applied(session, job_id)
+        session.refresh(application)
+        transitions = [(e.from_state, e.to_state, e.source) for e in application.state_history]
+        assert transitions == [
+            (ApplicationState.found, ApplicationState.queued, "manual"),
+            (ApplicationState.queued, ApplicationState.applied, "manual"),
+        ]
+
+
+def test_mark_applied_twice_does_not_duplicate_history(tmp_path: Path):
+    with _session(tmp_path) as session:
+        job_id = _job(session)
+        application = mark_applied(session, job_id)
+        mark_applied(session, job_id)
+        session.refresh(application)
+        assert len(application.state_history) == 1

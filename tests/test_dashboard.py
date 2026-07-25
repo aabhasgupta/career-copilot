@@ -28,7 +28,10 @@ email_integration:
 def _client(tmp_path: Path) -> tuple[TestClient, Path]:
     path = tmp_path / "profile.yaml"
     path.write_text(PROFILE)
-    return TestClient(create_app(path, packet_base_path=tmp_path / "packet_base.md")), path
+    app = create_app(
+        path, db_path=tmp_path / "test.db", packet_base_path=tmp_path / "packet_base.md"
+    )
+    return TestClient(app), path
 
 
 def _client_with_db(tmp_path: Path):
@@ -262,6 +265,133 @@ def test_job_queue_404_for_missing_job(tmp_path: Path):
     client = _client_with_db(tmp_path)
     resp = client.post("/jobs/99999/queue")
     assert resp.status_code == 404
+
+
+def test_suggestions_page_empty_state(tmp_path: Path):
+    client, _ = _client(tmp_path)
+    resp = client.get("/suggestions")
+    assert resp.status_code == 200
+    assert "Nothing pending" in resp.text
+
+
+def test_suggestions_confirm_and_decline_flow(tmp_path: Path, monkeypatch):
+    # No provider in tests: filing the email is skipped, DB writes still apply.
+    monkeypatch.delenv("AZURE_CLIENT_ID", raising=False)
+    from datetime import datetime, timezone
+
+    from copilot.db import get_engine, get_session, init_db
+    from copilot.db.models import (
+        ApplicationState,
+        EmailEventType,
+        Suggestion,
+        SuggestionKind,
+    )
+
+    profile_path = tmp_path / "profile.yaml"
+    profile_path.write_text(PROFILE)
+    db_path = tmp_path / "test.db"
+    engine = get_engine(db_path)
+    init_db(engine)
+    with get_session(engine) as session:
+        for i in (1, 2):
+            session.add(
+                Suggestion(
+                    kind=SuggestionKind.untracked_application,
+                    provider_message_id=f"m{i}",
+                    sender="careers@acme.com",
+                    subject=f"Thanks for applying to Acme {i}",
+                    body_text="We received your application.",
+                    received_at=datetime.now(timezone.utc),
+                    company_name="Acme",
+                    job_title=f"Engineer {i}",
+                    proposed_state=ApplicationState.applied,
+                    classified_type=EmailEventType.confirmation,
+                )
+            )
+        session.commit()
+    client = TestClient(
+        create_app(profile_path, db_path=db_path, packet_base_path=tmp_path / "packet.md")
+    )
+
+    listing = client.get("/suggestions")
+    assert "Untracked application" in listing.text
+    assert '<span class="badge">2</span>' in listing.text  # nav badge
+
+    assert client.post("/suggestions/1/confirm", follow_redirects=False).status_code == 303
+    assert client.post("/suggestions/2/decline", follow_redirects=False).status_code == 303
+    assert "Nothing pending" in client.get("/suggestions").text
+
+    with get_session(engine) as session:
+        from copilot.db.models import Application, Company
+
+        assert session.query(Company).filter_by(name="Acme").count() == 1
+        assert session.query(Application).count() == 1  # only the confirmed one
+
+
+def test_suggestions_404_for_missing_or_resolved(tmp_path: Path):
+    client, _ = _client(tmp_path)
+    assert client.post("/suggestions/99/confirm").status_code == 404
+    assert client.post("/suggestions/99/decline").status_code == 404
+
+
+def test_prefs_page_shows_inbox_sync_card(tmp_path: Path, monkeypatch):
+    from copilot.schedule.launchd import ScheduleStatus
+
+    monkeypatch.setattr(
+        "copilot.schedule.launchd.status",
+        lambda: ScheduleStatus(installed=False, loaded=False, detail="not installed"),
+    )
+    client, _ = _client(tmp_path)
+    resp = client.get("/")
+    assert "Inbox sync" in resp.text
+    assert "not installed" in resp.text
+    assert "copilot schedule install" in resp.text  # hint instead of buttons
+
+
+def test_schedule_pause_and_resume_buttons_reflect_state(tmp_path: Path, monkeypatch):
+    from copilot.schedule.launchd import ScheduleStatus
+
+    client, _ = _client(tmp_path)
+
+    monkeypatch.setattr(
+        "copilot.schedule.launchd.status",
+        lambda: ScheduleStatus(installed=True, loaded=True, detail="running hourly"),
+    )
+    assert 'action="/schedule/pause"' in client.get("/").text
+
+    monkeypatch.setattr(
+        "copilot.schedule.launchd.status",
+        lambda: ScheduleStatus(installed=True, loaded=False, detail="installed but paused"),
+    )
+    assert 'action="/schedule/resume"' in client.get("/").text
+
+
+def test_schedule_pause_route_calls_launchd_and_redirects(tmp_path: Path, monkeypatch):
+    calls = []
+    monkeypatch.setattr("copilot.schedule.launchd.pause", lambda: calls.append("pause"))
+    monkeypatch.setattr("copilot.schedule.launchd.resume", lambda: calls.append("resume"))
+    client, _ = _client(tmp_path)
+
+    assert client.post("/schedule/pause", follow_redirects=False).status_code == 303
+    assert client.post("/schedule/resume", follow_redirects=False).status_code == 303
+    assert calls == ["pause", "resume"]
+
+
+def test_schedule_resume_failure_shows_error_not_500(tmp_path: Path, monkeypatch):
+    from copilot.schedule.launchd import ScheduleStatus
+
+    def boom():
+        raise RuntimeError("Not installed - run 'copilot schedule install' first.")
+
+    monkeypatch.setattr("copilot.schedule.launchd.resume", boom)
+    monkeypatch.setattr(
+        "copilot.schedule.launchd.status",
+        lambda: ScheduleStatus(installed=False, loaded=False, detail="not installed"),
+    )
+    client, _ = _client(tmp_path)
+    resp = client.post("/schedule/resume")
+    assert resp.status_code == 200
+    assert "Resume failed" in resp.text
 
 
 def test_save_rejects_invalid_and_writes_nothing(tmp_path: Path):

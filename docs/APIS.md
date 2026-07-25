@@ -72,11 +72,16 @@ Every third-party service this project talks to, what it's for, how it's authent
 - **Matching caveat (load-bearing, found live 2026-07-23):** filer names are legal entity names ("AMAZON COM SERVICES LLC") that often differ from the brand name a job posting uses ("Amazon"). Matching is exact-after-normalization first, then a prefix match restricted to distinctive names (2+ words, or 6+ characters as a single word) - short acronym brand names (e.g. "EXL", "CGI") that differ from their legal filer name will often go unmatched by design, favoring precision over recall (same lesson as the Lever slug false-positive in D3).
 
 ### Microsoft Graph API
-- **Used for:** sending mail from the user's Hotmail/Outlook.com account (`email_agent/outlook.py`, `copilot email login` / `copilot email test` / `copilot digest`) - the digest email today; inbox monitoring is Phase 4, not yet built.
+- **Used for:** sending mail (digest, alerts) and inbox monitoring (`copilot inbox sync` - reading recent messages, filing them into the Career Copilot folder with per-type categories) on the user's Hotmail/Outlook.com account. All in `email_agent/outlook.py`.
 - **Auth:** MSAL device-code flow against a personal-Microsoft-account app registration ("Personal Microsoft accounts only", public client flows enabled, no client secret). `AZURE_CLIENT_ID` in `.env` identifies the app; `copilot email login` opens the device-code prompt once and caches the resulting token at `data/email_token.json` (gitignored) for silent renewal after that.
-- **Scopes:** `Mail.Send`, `Mail.Read`, `Mail.ReadWrite`, `MailboxSettings.ReadWrite` (the latter three reserved for Phase 4 inbox monitoring; only `Mail.Send` is exercised today).
-- **Endpoint:** `POST graph.microsoft.com/v1.0/me/sendMail`.
-- **Verified live:** 2026-07-24 - device-code login, `copilot email test`, and `copilot digest` (both the "nothing new" skip path and a real populated send) all confirmed against the user's actual Hotmail inbox.
+- **Scopes:** `Mail.Send`, `Mail.Read`, `Mail.ReadWrite`, `MailboxSettings.ReadWrite` - all four exercised as of Phase 4 (`MailboxSettings.ReadWrite` is what allows creating master categories).
+- **Endpoints:**
+  - `POST /v1.0/me/sendMail` - digest and alert emails
+  - `GET /v1.0/me/mailFolders/inbox/messages?$filter=receivedDateTime ge ...` - inbox sync fetch, paged via `@odata.nextLink`, with `Prefer: outlook.body-content-type="text"` for plain-text bodies
+  - `GET`/`POST /v1.0/me/mailFolders` - find/create the "Career Copilot" folder
+  - `GET`/`POST /v1.0/me/outlook/masterCategories` - find/create per-type categories
+  - `PATCH /v1.0/me/messages/{id}` (categories) then `POST /v1.0/me/messages/{id}/move` - filing; category is applied before the move because moving changes the message id
+- **Verified live:** sending 2026-07-24 (device-code login, `copilot email test`, `copilot digest` incl. the "nothing new" skip path). Inbox read/file endpoints: built 2026-07-25, live verification pending (Phase 4 verify step).
 
 ## Planned, not yet integrated
 

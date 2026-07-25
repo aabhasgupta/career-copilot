@@ -13,7 +13,7 @@ Design principle: assist, never impersonate. No LinkedIn scraping, no auto-submi
 
 ## Status
 
-Phases 0 (foundation) and 1 (discovery) complete. Phase 2 - fit scoring, sponsorship research, and email digests - is done and verified live against a real inbox. Phase 3 - the base application packet and queue/mark-applied tracking - is built and smoke-tested; real-usage verification (actually applying with it) is still pending. See `docs/PLAN.md` for the roadmap, `docs/DECISIONS.md` for design decisions, and `docs/APIS.md` for the external APIs in use.
+Phases 0-3 are complete: foundation, discovery, fit scoring/sponsorship research/email digests, and the base application packet with queue/mark-applied tracking. Phase 4 - inbox monitoring with hourly scheduling - is built and unit-tested; live verification against the real inbox is pending. See `docs/PLAN.md` for the roadmap, `docs/DECISIONS.md` for design decisions, and `docs/APIS.md` for the external APIs in use.
 
 ## Setup
 
@@ -63,8 +63,8 @@ Prefer forms over YAML? `uv run copilot dashboard` serves a local web page
 save and the file's comments preserved. The same dashboard also has a **Jobs**
 tab - a browsable, filterable table of every job (best fit first) with a
 click-through detail view for the full fit breakdown and sponsorship evidence,
-so you don't have to piece it together one `jobs show <id>` at a time. It's
-read-only for now (marking applied / tracking is Phase 3).
+so you don't have to piece it together one `jobs show <id>` at a time, plus
+Queue/Mark-applied buttons on each job's detail page.
 
 ## Scoring fit
 
@@ -104,10 +104,11 @@ uv run copilot digest --dry-run   # prints the digest without sending or marking
 ```
 
 Sending goes through Microsoft Graph (MSAL device-code flow - no password or client secret
-stored; see `docs/APIS.md`). Requires `AZURE_CLIENT_ID` in `.env` from a personal-Microsoft-account
-app registration with public client flows enabled (walk-through in `docs/DECISIONS.md`). `copilot
-email login` caches the resulting token locally and renews it silently after that - you only do
-the device-code prompt once.
+stored). Requires a one-time, free Azure app registration and `AZURE_CLIENT_ID` in `.env` -
+**[docs/EMAIL_SETUP.md](docs/EMAIL_SETUP.md)** is the full step-by-step guide (portal clicks,
+permissions, troubleshooting, and the planned Gmail equivalent). `copilot email login` caches
+the resulting token locally and renews it silently after that - you only do the device-code
+prompt once.
 
 The digest reports jobs discovered since the last digest was sent (tracked in
 `data/digest_state.json`, not a fixed 24h window, so a missed scheduled run never silently drops
@@ -134,6 +135,46 @@ it never happens automatically. The dashboard has the same button on the Prefere
 record what you did - queuing never gets auto-created, and marking applied never fires until you
 click it. See **[docs/APPLYING.md](docs/APPLYING.md)** for how to actually get the packet's
 content into an application: by hand, or via a free autofill tool like Simplify.
+
+## Inbox monitoring
+
+```sh
+uv run copilot inbox sync --dry-run  # see what sync would do, without writing anything
+uv run copilot inbox sync            # classify replies, update states, file emails, alert
+uv run copilot inbox review          # anything needing your decision
+uv run copilot inbox confirm 3       # yes - track it / adopt the email's state
+uv run copilot inbox decline 4       # no - never ask about this email again
+```
+
+Inbox monitoring needs the same one-time email setup as the digest - see
+**[docs/EMAIL_SETUP.md](docs/EMAIL_SETUP.md)** (the four Graph permissions it lists cover both).
+
+`inbox sync` reads recent inbox mail, keeps only ATS/recruiting-looking messages (a cheap
+pattern pre-filter - newsletters and receipts are never sent to Claude), matches each against
+your tracked applications, and classifies it (confirmation, rejection, interview invite, online
+assessment, recruiter screen). Matched emails move into a "Career Copilot" folder in Outlook,
+tagged with a category per type, and the application's state advances automatically when the
+email agrees with what's stored. Interview invites and online assessments also trigger an
+immediate alert email; everything else lands in the daily digest.
+
+Two things are never done silently: an email about a job you applied to *outside* Career
+Copilot becomes a suggestion (confirm to start tracking it, decline to ignore it forever), and
+an email that *contradicts* a state you set yourself becomes a flagged conflict for you to
+resolve - the email agent never overrules you, and you never lose what it found
+(`docs/DECISIONS.md` D20, D24). Suggestions live in `copilot inbox review` and the dashboard's
+**Suggestions** tab.
+
+```sh
+uv run copilot schedule install    # hourly background sync + digest via launchd
+uv run copilot schedule status     # installed? running? last exit code
+uv run copilot schedule pause      # stop runs without uninstalling
+uv run copilot schedule resume
+uv run copilot schedule uninstall
+```
+
+Scheduling uses launchd rather than cron so a run missed while the laptop was asleep fires on
+wake instead of being skipped. Logs go to `data/logs/`. The dashboard's Preferences page has an
+"Inbox sync" card showing the schedule's status with the same Pause/Resume controls.
 
 ## Development
 

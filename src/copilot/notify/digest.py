@@ -4,6 +4,12 @@ link, salary, location); everything else summarized as a count only, since a
 mailbox isn't the place to browse the full list - `copilot jobs list` /
 the dashboard's Jobs tab are (docs/DECISIONS.md D19).
 
+Phase 4 additions: application state changes since the last digest (from the
+state-history log, so email-driven and manual changes both show, tagged with
+who made them) and a pending-suggestions count. Non-urgent inbox events
+(rejections, confirmations, recruiter screens) surface here rather than as
+immediate alerts - only interview invites and OAs interrupt (D26).
+
 "Since the last digest" is tracked in data/digest_state.json rather than a
 fixed 24h window, so a missed/late scheduled run (D8 - launchd fires on wake,
 not a fixed clock) never silently drops jobs found in between. No prior
@@ -22,8 +28,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from copilot.config import DATA_DIR
-from copilot.db.models import Job
+from copilot.db.models import Application, ApplicationStateEvent, Job
 from copilot.formatting import format_salary
+from copilot.suggestions import list_pending
 
 DIGEST_STATE_PATH = DATA_DIR / "digest_state.json"
 HIGH_FIT_THRESHOLD = 70
@@ -61,12 +68,43 @@ def _job_row_html(job: Job) -> str:
     )
 
 
+def _state_changes_html(session: Session, since: datetime) -> str:
+    changes = session.scalars(
+        select(ApplicationStateEvent)
+        .where(ApplicationStateEvent.created_at >= since)
+        .order_by(ApplicationStateEvent.created_at)
+    ).all()
+    if not changes:
+        return ""
+    lines = []
+    for c in changes:
+        application = session.get(Application, c.application_id)
+        job = application.job if application else None
+        label = f"{job.company.name} - {job.title}" if job else f"application {c.application_id}"
+        who = "you" if c.source == "manual" else "email"
+        frm = c.from_state.value if c.from_state else "?"
+        lines.append(f"<li>{html.escape(label)}: {frm} &rarr; {c.to_state.value} ({who})</li>")
+    return f"<h3>State changes</h3><ul>{''.join(lines)}</ul>"
+
+
+def _suggestions_html(session: Session) -> str:
+    count = len(list_pending(session))
+    if not count:
+        return ""
+    return (
+        f"<p><b>{count} suggestion{'s' if count != 1 else ''} awaiting your review</b> - "
+        "run <code>copilot inbox review</code> or open the dashboard's Suggestions tab.</p>"
+    )
+
+
 def build_digest(session: Session, state_path: Path = DIGEST_STATE_PATH) -> Digest | None:
     """Returns None when there's nothing new to report - callers should skip
     sending rather than send an empty digest."""
     since = _last_sent_at(state_path)
     new_jobs = session.scalars(select(Job).where(Job.created_at >= since)).all()
-    if not new_jobs:
+    state_changes = _state_changes_html(session, since)
+    suggestions = _suggestions_html(session)
+    if not new_jobs and not state_changes and not suggestions:
         return None
 
     high_fit = sorted(
@@ -74,7 +112,13 @@ def build_digest(session: Session, state_path: Path = DIGEST_STATE_PATH) -> Dige
         key=lambda j: -(j.fit_score or 0),
     )
 
-    subject = f"Career Copilot: {len(new_jobs)} new jobs, {len(high_fit)} scored {HIGH_FIT_THRESHOLD}+"
+    if new_jobs:
+        subject = (
+            f"Career Copilot: {len(new_jobs)} new jobs, {len(high_fit)} scored "
+            f"{HIGH_FIT_THRESHOLD}+"
+        )
+    else:
+        subject = "Career Copilot: application updates"
 
     if high_fit:
         rows = "".join(_job_row_html(j) for j in high_fit)
@@ -85,9 +129,16 @@ def build_digest(session: Session, state_path: Path = DIGEST_STATE_PATH) -> Dige
             "<tr><th>Fit</th><th>Title</th><th>Company</th><th>Location</th><th>Salary</th></tr>"
             f"{rows}</table>"
         )
-    else:
+    elif new_jobs:
         highlights = f"<p>None scored {HIGH_FIT_THRESHOLD}+ yet - check the full list for anything promising.</p>"
+    else:
+        highlights = ""
 
-    body_html = f"<p>{len(new_jobs)} new job{'s' if len(new_jobs) != 1 else ''} since the last digest.</p>{highlights}"
+    jobs_line = (
+        f"<p>{len(new_jobs)} new job{'s' if len(new_jobs) != 1 else ''} since the last digest.</p>"
+        if new_jobs
+        else ""
+    )
+    body_html = f"{jobs_line}{highlights}{state_changes}{suggestions}"
 
     return Digest(new_count=len(new_jobs), high_fit_jobs=high_fit, subject=subject, body_html=body_html)

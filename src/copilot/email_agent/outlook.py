@@ -14,20 +14,25 @@ See docs/APIS.md for the Azure app registration steps and required scopes.
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 
 import httpx
 import msal
 
 from copilot.config import DATA_DIR
-from copilot.email_agent.provider import EmailProvider
+from copilot.email_agent.provider import EmailProvider, InboundMessage
 
 TOKEN_CACHE_PATH = DATA_DIR / "email_token.json"
 # "consumers" (not "common"/"organizations") is the correct authority for a
 # personal Microsoft account (Hotmail/Outlook.com/Live) - confirmed live.
 AUTHORITY = "https://login.microsoftonline.com/consumers"
 SCOPES = ["Mail.Send", "Mail.Read", "Mail.ReadWrite", "MailboxSettings.ReadWrite"]
-SEND_MAIL_URL = "https://graph.microsoft.com/v1.0/me/sendMail"
+GRAPH = "https://graph.microsoft.com/v1.0"
+SEND_MAIL_URL = f"{GRAPH}/me/sendMail"
+COPILOT_FOLDER = "Career Copilot"
+# Outlook category preset colors; assignment order is arbitrary, just stable.
+CATEGORY_COLOR = "preset9"
 
 
 def _load_cache(cache_path: Path) -> msal.SerializableTokenCache:
@@ -86,9 +91,16 @@ class OutlookProvider(EmailProvider):
     def __init__(self, client_id: str, cache_path: Path = TOKEN_CACHE_PATH):
         self.client_id = client_id
         self.cache_path = cache_path
+        # Resolved lazily and memoized per process: the Career Copilot folder
+        # id and the set of category names known to exist.
+        self._folder_id: str | None = None
+        self._known_categories: set[str] | None = None
+
+    def _headers(self, **extra: str) -> dict[str, str]:
+        token = _get_token(self.client_id, self.cache_path)
+        return {"Authorization": f"Bearer {token}", **extra}
 
     def send_mail(self, *, to: str, subject: str, body_html: str) -> None:
-        token = _get_token(self.client_id, self.cache_path)
         payload = {
             "message": {
                 "subject": subject,
@@ -97,10 +109,107 @@ class OutlookProvider(EmailProvider):
             },
             "saveToSentItems": True,
         }
+        resp = httpx.post(SEND_MAIL_URL, headers=self._headers(), json=payload, timeout=30)
+        resp.raise_for_status()
+
+    def list_messages_since(self, since: datetime) -> list[InboundMessage]:
+        # Prefer header makes Graph return plain-text bodies, sparing us HTML
+        # stripping. Paged via @odata.nextLink; inbox folder only (not Sent,
+        # not the Career Copilot folder itself - already-filed mail is done).
+        url = (
+            f"{GRAPH}/me/mailFolders/inbox/messages"
+            f"?$filter=receivedDateTime ge {since.strftime('%Y-%m-%dT%H:%M:%SZ')}"
+            "&$orderby=receivedDateTime asc"
+            "&$select=id,conversationId,from,subject,body,receivedDateTime"
+            "&$top=50"
+        )
+        headers = self._headers(Prefer='outlook.body-content-type="text"')
+        messages: list[InboundMessage] = []
+        while url:
+            resp = httpx.get(url, headers=headers, timeout=30)
+            resp.raise_for_status()
+            data = resp.json()
+            for m in data.get("value", []):
+                addr = (m.get("from") or {}).get("emailAddress") or {}
+                messages.append(
+                    InboundMessage(
+                        message_id=m["id"],
+                        thread_id=m.get("conversationId") or m["id"],
+                        sender=(addr.get("address") or "").lower(),
+                        sender_name=addr.get("name") or "",
+                        subject=m.get("subject") or "",
+                        body_text=(m.get("body") or {}).get("content") or "",
+                        received_at=datetime.fromisoformat(
+                            m["receivedDateTime"].replace("Z", "+00:00")
+                        ),
+                    )
+                )
+            url = data.get("@odata.nextLink")
+        return messages
+
+    def _ensure_folder(self) -> str:
+        if self._folder_id:
+            return self._folder_id
+        headers = self._headers()
+        resp = httpx.get(
+            f"{GRAPH}/me/mailFolders?$filter=displayName eq '{COPILOT_FOLDER}'",
+            headers=headers,
+            timeout=30,
+        )
+        resp.raise_for_status()
+        existing = resp.json().get("value", [])
+        if existing:
+            self._folder_id = existing[0]["id"]
+        else:
+            resp = httpx.post(
+                f"{GRAPH}/me/mailFolders",
+                headers=headers,
+                json={"displayName": COPILOT_FOLDER},
+                timeout=30,
+            )
+            resp.raise_for_status()
+            self._folder_id = resp.json()["id"]
+        return self._folder_id
+
+    def _ensure_category(self, category: str) -> None:
+        headers = self._headers()
+        if self._known_categories is None:
+            resp = httpx.get(f"{GRAPH}/me/outlook/masterCategories", headers=headers, timeout=30)
+            resp.raise_for_status()
+            self._known_categories = {
+                c["displayName"] for c in resp.json().get("value", [])
+            }
+        if category in self._known_categories:
+            return
         resp = httpx.post(
-            SEND_MAIL_URL,
-            headers={"Authorization": f"Bearer {token}"},
-            json=payload,
+            f"{GRAPH}/me/outlook/masterCategories",
+            headers=headers,
+            json={"displayName": category, "color": CATEGORY_COLOR},
+            timeout=30,
+        )
+        # 409 = created concurrently / already exists under different casing.
+        if resp.status_code != 409:
+            resp.raise_for_status()
+        self._known_categories.add(category)
+
+    def file_message(self, message_id: str, *, category: str) -> None:
+        """Tag with the category first, then move: the move gives the message
+        a new id in the target folder, so category-then-move keeps the id we
+        hold valid for both calls."""
+        self._ensure_category(category)
+        folder_id = self._ensure_folder()
+        headers = self._headers()
+        resp = httpx.patch(
+            f"{GRAPH}/me/messages/{message_id}",
+            headers=headers,
+            json={"categories": [category]},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        resp = httpx.post(
+            f"{GRAPH}/me/messages/{message_id}/move",
+            headers=headers,
+            json={"destinationId": folder_id},
             timeout=30,
         )
         resp.raise_for_status()

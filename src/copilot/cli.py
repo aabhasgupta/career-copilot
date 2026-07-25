@@ -21,10 +21,14 @@ profile_app = typer.Typer(help="Your profile and resume.")
 jobs_app = typer.Typer(help="Discovered jobs.")
 email_app = typer.Typer(help="Email login and sending (Microsoft Graph).")
 packet_app = typer.Typer(help="Application packet (reusable content, not per-job).")
+inbox_app = typer.Typer(help="Inbox monitoring: sync, review suggestions, confirm/decline.")
+schedule_app = typer.Typer(help="Hourly background sync via launchd (fires missed runs on wake).")
 app.add_typer(profile_app, name="profile")
 app.add_typer(jobs_app, name="jobs")
 app.add_typer(email_app, name="email")
 app.add_typer(packet_app, name="packet")
+app.add_typer(inbox_app, name="inbox")
+app.add_typer(schedule_app, name="schedule")
 
 console = Console()
 
@@ -479,6 +483,182 @@ def email_test() -> None:
         raise typer.Exit(1) from exc
 
     console.print(f"[green]Sent.[/] Check {profile.email_integration.address}.")
+
+
+@inbox_app.command("sync")
+def inbox_sync(
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Show what would happen without writing state, moving mail, or "
+        "alerting. Classification still runs (it IS the answer to 'what "
+        "would happen'), so Claude calls are still spent.",
+    ),
+) -> None:
+    """Read recent inbox mail, classify job-related messages, update
+    application state (D24 rules), file emails into the Career Copilot
+    folder, and queue suggestions for anything needing your decision."""
+    profile = load_profile()
+
+    from copilot.db import get_engine, get_session, init_db
+    from copilot.email_agent.provider import get_provider
+    from copilot.email_agent.sync import run_sync
+
+    engine = get_engine()
+    init_db(engine)
+    try:
+        provider = get_provider(profile)
+        with get_session(engine) as session:
+            result = run_sync(session, provider, profile, dry_run=dry_run)
+    except Exception as exc:  # noqa: BLE001 - shown to the user directly
+        console.print(f"[red]Sync failed:[/] {exc}")
+        raise typer.Exit(1) from exc
+
+    if dry_run:
+        console.print("[dim]--dry-run: nothing was written, moved, or sent.[/]")
+    console.print(
+        f"Fetched {result.fetched} message{'s' if result.fetched != 1 else ''}: "
+        f"{result.skipped_prefilter} not job mail, {result.skipped_seen} already handled."
+    )
+    for action in result.actions:
+        console.print(f"  - {action}")
+    if result.suggestions or result.conflicts:
+        console.print(
+            f"[yellow]{result.suggestions + result.conflicts} suggestion(s) awaiting review[/]"
+            " - run 'copilot inbox review'."
+        )
+
+
+@inbox_app.command("review")
+def inbox_review() -> None:
+    """List pending suggestions: untracked applications the email agent
+    noticed, and state conflicts it refused to resolve on its own."""
+    from copilot.db import get_engine, get_session
+    from copilot.suggestions import list_pending
+
+    with get_session(get_engine()) as session:
+        pending = list_pending(session)
+        if not pending:
+            console.print("Nothing pending. All caught up.")
+            return
+        table = Table(title="Pending suggestions")
+        table.add_column("ID", justify="right")
+        table.add_column("Kind")
+        table.add_column("Company")
+        table.add_column("Would set")
+        table.add_column("Email")
+        for s in pending:
+            table.add_row(
+                str(s.id),
+                "conflict" if s.kind.value == "state_conflict" else "untracked",
+                s.company_name or "?",
+                s.proposed_state.value if s.proposed_state else "-",
+                (s.subject or "")[:60],
+            )
+        console.print(table)
+        console.print("confirm with 'copilot inbox confirm <id>', decline with 'inbox decline <id>'")
+
+
+@inbox_app.command("confirm")
+def inbox_confirm(suggestion_id: int) -> None:
+    """Apply a suggestion: create the tracked application (untracked kind)
+    or adopt the email's implied state (conflict kind), then file the email."""
+    profile = load_profile()
+
+    from copilot.db import get_engine, get_session
+    from copilot.email_agent.provider import get_provider
+    from copilot.suggestions import confirm
+
+    with get_session(get_engine()) as session:
+        try:
+            provider = get_provider(profile)
+            suggestion = confirm(session, suggestion_id, provider)
+            session.commit()
+        except (LookupError, ValueError) as exc:
+            console.print(f"[red]{exc}[/]")
+            raise typer.Exit(1) from exc
+    console.print(
+        f"[green]Confirmed.[/] {suggestion.company_name or '?'} is now tracked"
+        + (f" at state '{suggestion.proposed_state.value}'." if suggestion.proposed_state else ".")
+    )
+
+
+@inbox_app.command("decline")
+def inbox_decline(suggestion_id: int) -> None:
+    """Decline a suggestion: nothing is created or changed, and this email
+    will never be suggested again."""
+    from copilot.db import get_engine, get_session
+    from copilot.suggestions import decline
+
+    with get_session(get_engine()) as session:
+        try:
+            decline(session, suggestion_id)
+            session.commit()
+        except (LookupError, ValueError) as exc:
+            console.print(f"[red]{exc}[/]")
+            raise typer.Exit(1) from exc
+    console.print("[green]Declined.[/] Nothing was changed.")
+
+
+@schedule_app.command("install")
+def schedule_install() -> None:
+    """Install the hourly launchd job (inbox sync + digest). Missed runs
+    fire when the laptop wakes - no need to stay on."""
+    from copilot.schedule.launchd import install
+
+    try:
+        plist = install(Path.cwd())
+    except Exception as exc:  # noqa: BLE001 - shown to the user directly
+        console.print(f"[red]Install failed:[/] {exc}")
+        raise typer.Exit(1) from exc
+    console.print(f"[green]Installed.[/] {plist}\nRuns hourly; logs in data/logs/.")
+
+
+@schedule_app.command("status")
+def schedule_status() -> None:
+    """Show whether the hourly job is installed, loaded, and its last exit."""
+    from copilot.schedule.launchd import status
+
+    s = status()
+    color = "green" if s.loaded else ("yellow" if s.installed else "red")
+    console.print(f"[{color}]{s.detail}[/]")
+
+
+@schedule_app.command("pause")
+def schedule_pause() -> None:
+    """Stop scheduled runs without uninstalling (resume brings them back)."""
+    from copilot.schedule.launchd import pause
+
+    try:
+        pause()
+    except Exception as exc:  # noqa: BLE001 - shown to the user directly
+        console.print(f"[red]Pause failed:[/] {exc}")
+        raise typer.Exit(1) from exc
+    console.print("[yellow]Paused.[/] 'copilot schedule resume' to restart.")
+
+
+@schedule_app.command("resume")
+def schedule_resume() -> None:
+    """Resume scheduled runs after a pause."""
+    from copilot.schedule.launchd import resume
+
+    try:
+        resume()
+    except Exception as exc:  # noqa: BLE001 - shown to the user directly
+        console.print(f"[red]Resume failed:[/] {exc}")
+        raise typer.Exit(1) from exc
+    console.print("[green]Resumed.[/] Runs hourly again.")
+
+
+@schedule_app.command("uninstall")
+def schedule_uninstall() -> None:
+    """Remove the launchd job and its plist entirely."""
+    from copilot.schedule.launchd import uninstall
+
+    if uninstall():
+        console.print("[green]Uninstalled.[/]")
+    else:
+        console.print("[yellow]Nothing installed.[/]")
 
 
 @app.command()

@@ -30,7 +30,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import select
 
 from copilot.config import Profile
-from copilot.db import get_engine, get_session
+from copilot.db import get_engine, get_session, init_db
 from copilot.db.models import Application, Job
 from copilot.formatting import format_posted, format_salary
 from copilot.geocode import Geocoder
@@ -143,15 +143,22 @@ _STYLE = """
   .btn-row { display: flex; gap: .6rem; flex-wrap: wrap; }
   .btn-row button { padding: .5rem 1.2rem; }
   button.secondary { background: #eef0fb; color: var(--ink); box-shadow: none; }
+  .badge { background: #e8590c; color: #fff; border-radius: 999px; font-size: .72rem;
+           font-weight: 700; padding: .1rem .5rem; margin-left: .35rem; }
+  .evidence { background: #f6f7fb; border-left: 3px solid var(--accent); padding: .7rem .9rem;
+              white-space: pre-wrap; font-size: .85rem; max-height: 260px; overflow-y: auto; }
 """
 
 
-def _shell(active: str, body: str) -> str:
+def _shell(active: str, body: str, pending_suggestions: int = 0) -> str:
     def link(path: str, label: str) -> str:
         cls = "navlink active" if path == active else "navlink"
         return f'<a class="{cls}" href="{path}">{label}</a>'
 
-    nav = link("/", "Preferences") + link("/jobs", "Jobs")
+    suggestions_label = "Suggestions"
+    if pending_suggestions:
+        suggestions_label += f'<span class="badge">{pending_suggestions}</span>'
+    nav = link("/", "Preferences") + link("/jobs", "Jobs") + link("/suggestions", suggestions_label)
     return f"""<!doctype html>
 <html>
 <head>
@@ -237,6 +244,16 @@ happens automatically.</p>
 <form method="post" action="/packet/base">
   <div class="actions"><button type="submit" class="secondary">Regenerate base packet</button></div>
 </form>
+</div>
+
+<div class="card">
+<h2>Inbox sync</h2>
+<p class="sub">The hourly background job that reads new inbox mail, updates
+application states, and files emails. Pausing stops the schedule; nothing
+touches your inbox until you resume (manual <code>copilot inbox sync</code>
+still works). Missed time is always caught up on the next run - never
+skipped.</p>
+{schedule_section}
 </div>"""
 
 
@@ -381,6 +398,78 @@ def _packet_section(packet_base_path: Path) -> str:
     return f'<div class="packetbox">{html.escape(packet_base_path.read_text())}</div>'
 
 
+def _schedule_section() -> str:
+    try:
+        from copilot.schedule.launchd import status
+
+        s = status()
+    except Exception as exc:  # noqa: BLE001 - a broken launchctl shouldn't kill the page
+        return f'<p class="sub">Could not read schedule status: {html.escape(str(exc))}</p>'
+
+    detail = f'<p>Status: <span class="state">{html.escape(s.detail)}</span></p>'
+    if s.loaded:
+        button = (
+            '<form method="post" action="/schedule/pause">'
+            '<button type="submit" class="secondary">Pause</button></form>'
+        )
+    elif s.installed:
+        button = (
+            '<form method="post" action="/schedule/resume">'
+            "<button type=\"submit\">Resume</button></form>"
+        )
+    else:
+        button = (
+            '<p class="footnote">Not installed - run <code>copilot schedule install</code> '
+            "once to start hourly syncing.</p>"
+        )
+    return f'{detail}<div class="btn-row">{button}</div>'
+
+
+def _suggestion_card(s) -> str:
+    kind_label = (
+        "State conflict" if s.kind.value == "state_conflict" else "Untracked application"
+    )
+    company = html.escape(s.company_name or "unknown company")
+    title = f" - {html.escape(s.job_title)}" if s.job_title else ""
+    proposed = s.proposed_state.value if s.proposed_state else "no state change"
+    if s.kind.value == "state_conflict":
+        explain = (
+            f"This email implies <b>{proposed}</b>, which contradicts the state you set. "
+            "Confirm to adopt the email's state; decline to keep yours."
+        )
+    else:
+        explain = (
+            f"This looks like an application you made outside Career Copilot. Confirm to "
+            f"track it (state: <b>{proposed}</b>); decline to ignore this email permanently."
+        )
+    sender = html.escape(s.sender or "")
+    subject = html.escape(s.subject or "")
+    snippet = html.escape((s.body_text or "")[:800])
+    return f"""<div class="card">
+<h2>{kind_label}: {company}{title}</h2>
+<p class="sub">{explain}</p>
+<div class="evidence">From: {sender}
+Subject: {subject}
+
+{snippet}</div>
+<div class="btn-row" style="margin-top:.8rem">
+<form method="post" action="/suggestions/{s.id}/confirm"><button type="submit">Confirm</button></form>
+<form method="post" action="/suggestions/{s.id}/decline"><button type="submit" class="secondary">Decline</button></form>
+</div>
+</div>"""
+
+
+def _suggestions_body(pending: list) -> str:
+    if not pending:
+        return (
+            '<div class="card"><h2>Suggestions</h2>'
+            '<p class="sub">Nothing pending. When inbox sync finds an email it can\'t act on '
+            "alone - an application made outside Career Copilot, or a state conflict - it "
+            "shows up here for your decision.</p></div>"
+        )
+    return "".join(_suggestion_card(s) for s in pending)
+
+
 def _application_actions(job_id: int, application: Application | None) -> str:
     state = application.state.value if application else "found"
     return f"""<div class="card">
@@ -407,6 +496,16 @@ def create_app(
 
     app = FastAPI(title="Career Copilot")
     packet_path = packet_base_path if packet_base_path is not None else PACKET_BASE_PATH
+    # Every page needs the DB now (the nav's pending-suggestions badge), so
+    # make sure the schema exists even if the dashboard is the first thing run.
+    init_db(get_engine(db_path))
+
+    def shell(active: str, body: str) -> str:
+        from copilot.suggestions import pending_count
+
+        with get_session(get_engine(db_path)) as session:
+            count = pending_count(session)
+        return _shell(active, body, pending_suggestions=count)
 
     def render_prefs(flash: str = "") -> str:
         with open(profile_path) as f:
@@ -425,8 +524,9 @@ def create_app(
             industry_vocab=", ".join(i.value for i in Industry),
             staffing_checked="checked" if search.deprioritize_staffing else "",
             packet_section=_packet_section(packet_path),
+            schedule_section=_schedule_section(),
         )
-        return _shell("/", body)
+        return shell("/", body)
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:
@@ -523,7 +623,7 @@ def create_app(
             ranked = rank_jobs(jobs, profile, Geocoder())[:limit]
             max_age_value = str(age_ceiling) if age_ceiling is not None else ""
             body = _jobs_list_body(ranked, total, min_fit, location, max_age_value)
-        return _shell("/jobs", body)
+        return shell("/jobs", body)
 
     @app.get("/jobs/{job_id}", response_class=HTMLResponse)
     def job_detail(job_id: int):
@@ -531,7 +631,7 @@ def create_app(
             job = session.scalar(select(Job).where(Job.id == job_id))
             if job is None:
                 return HTMLResponse(
-                    _shell(
+                    shell(
                         "/jobs",
                         '<a class="backlink" href="/jobs">&larr; Back to jobs</a>'
                         f'<div class="card"><p class="sub">No job with id {job_id}.</p></div>',
@@ -540,7 +640,7 @@ def create_app(
                 )
             application = session.scalar(select(Application).where(Application.job_id == job_id))
             body = _job_detail_body(job, application)
-        return _shell("/jobs", body)
+        return shell("/jobs", body)
 
     @app.post("/jobs/{job_id}/queue")
     def job_queue(job_id: int):
@@ -563,5 +663,74 @@ def create_app(
             mark_applied(session, job_id)
             session.commit()
         return RedirectResponse(f"/jobs/{job_id}", status_code=303)
+
+    @app.post("/schedule/pause")
+    def schedule_pause():
+        from copilot.schedule.launchd import pause
+
+        try:
+            pause()
+        except Exception as exc:  # noqa: BLE001 - shown on the page
+            return HTMLResponse(
+                render_prefs(f'<div class="flash err">Pause failed: {html.escape(str(exc))}</div>')
+            )
+        return RedirectResponse("/", status_code=303)
+
+    @app.post("/schedule/resume")
+    def schedule_resume():
+        from copilot.schedule.launchd import resume
+
+        try:
+            resume()
+        except Exception as exc:  # noqa: BLE001 - shown on the page
+            return HTMLResponse(
+                render_prefs(f'<div class="flash err">Resume failed: {html.escape(str(exc))}</div>')
+            )
+        return RedirectResponse("/", status_code=303)
+
+    @app.get("/suggestions", response_class=HTMLResponse)
+    def suggestions_list() -> str:
+        from copilot.suggestions import list_pending
+
+        with get_session(get_engine(db_path)) as session:
+            body = _suggestions_body(list_pending(session))
+        return shell("/suggestions", body)
+
+    def _try_provider():
+        """Filing the email is a courtesy mirror of the DB write (D5) - if
+        Graph isn't reachable (no client id, expired login), the confirm
+        still proceeds and only the mailbox filing is skipped."""
+        try:
+            with open(profile_path) as f:
+                raw = pyyaml.safe_load(f)
+            from copilot.email_agent.provider import get_provider
+
+            return get_provider(Profile.model_validate(raw))
+        except Exception:  # noqa: BLE001
+            return None
+
+    @app.post("/suggestions/{suggestion_id}/confirm")
+    def suggestion_confirm(suggestion_id: int):
+        from copilot.suggestions import confirm
+
+        with get_session(get_engine(db_path)) as session:
+            try:
+                confirm(session, suggestion_id, _try_provider())
+                session.commit()
+            except (LookupError, ValueError) as exc:
+                return HTMLResponse(str(exc), status_code=404)
+        return RedirectResponse("/suggestions", status_code=303)
+
+    @app.post("/suggestions/{suggestion_id}/decline")
+    def suggestion_decline(suggestion_id: int):
+        from copilot.suggestions import decline
+
+        with get_session(get_engine(db_path)) as session:
+            try:
+                decline(session, suggestion_id)
+                session.commit()
+            except (LookupError, ValueError) as exc:
+                return HTMLResponse(str(exc), status_code=404)
+        return RedirectResponse("/suggestions", status_code=303)
 
     return app
