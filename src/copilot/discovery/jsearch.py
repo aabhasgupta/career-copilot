@@ -54,6 +54,17 @@ def _normalize(job: dict) -> DiscoveredJob:
     )
 
 
+def _record_quota(headers) -> None:
+    """Capture RapidAPI's rate-limit headers opportunistically (docs/APIS.md,
+    D33) - best-effort, must never break discovery over a usage-file hiccup."""
+    try:
+        from copilot.api_usage import record_jsearch_quota
+
+        record_jsearch_quota(headers)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def search_jsearch(
     title: str,
     location: str,
@@ -78,6 +89,9 @@ def search_jsearch(
             },
             headers={"X-RapidAPI-Key": api_key, "X-RapidAPI-Host": HOST},
         )
+        # Read headers before raise_for_status so a 429 quota-exhausted
+        # response still updates the captured "remaining" count.
+        _record_quota(resp.headers)
         resp.raise_for_status()
         data = resp.json()
 

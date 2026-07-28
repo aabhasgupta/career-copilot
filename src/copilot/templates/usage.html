@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}API usage - Career Copilot{% endblock %}
+
+{% macro row(r) %}
+<div class="irow" title="{{ r.purpose }}">
+  <span class="rdot {{ r.dot }}"></span>
+  <span class="rname">{{ r.label }}</span>
+  <span class="rnote">{{ r.note }}</span>
+</div>
+{% endmacro %}
+
+{% block content %}
+<div class="page-head">
+  <h1>API usage</h1>
+  <p>What each external service is for, whether it's connected, and known quota. Hover a row for details.</p>
+</div>
+
+<div class="integ-section">
+  <h2>Metered</h2>
+  {% for r in metered %}{{ row(r) }}{% endfor %}
+</div>
+
+<div class="integ-section">
+  <h2>Free &amp; unauthenticated</h2>
+  {% for r in free %}{{ row(r) }}{% endfor %}
+</div>
+
+<p class="footnote">Quota numbers are captured from real API responses as Career Copilot uses them - never a
+dedicated call spent just to check status, so a number may lag until the next real discover run.
+Manage keys and connections on <a href="/integrations">Integrations</a>.</p>
+{% endblock %}

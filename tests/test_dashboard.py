@@ -879,6 +879,39 @@ def test_config_resume_rejects_extension_mismatch(tmp_path: Path):
     assert not resume.exists()  # nothing written on mismatch
 
 
+def test_usage_page_lists_metered_and_free_apis(tmp_path: Path):
+    client, _ = _client(tmp_path)
+    resp = client.get("/usage")
+    assert resp.status_code == 200
+    for label in (
+        "Anthropic API", "JSearch (RapidAPI)", "Adzuna", "Microsoft Graph",
+        "Greenhouse", "Remotive", "RemoteOK", "Nominatim", "USCIS",
+    ):
+        assert label in resp.text
+    assert 'class="rdot' in resp.text
+
+
+def test_usage_page_shows_real_jsearch_quota_when_captured(tmp_path: Path, monkeypatch):
+    from copilot.api_usage import Quota
+
+    monkeypatch.setenv("JSEARCH_API_KEY", "test-key")
+    monkeypatch.setattr(
+        "copilot.api_usage.get_jsearch_quota",
+        lambda: Quota(limit=200, remaining=58, reset_at=None, captured_at=None),
+    )
+    client, _ = _client(tmp_path)
+    resp = client.get("/usage")
+    assert "58 of 200 left" in resp.text
+
+
+def test_usage_page_shows_not_connected_without_keys(tmp_path: Path, monkeypatch):
+    for var in ("ANTHROPIC_API_KEY", "JSEARCH_API_KEY", "ADZUNA_APP_ID", "ADZUNA_APP_KEY"):
+        monkeypatch.delenv(var, raising=False)
+    client, _ = _client(tmp_path)
+    resp = client.get("/usage")
+    assert "not connected" in resp.text
+
+
 def test_save_rejects_invalid_and_writes_nothing(tmp_path: Path):
     client, path = _client(tmp_path)
     before = path.read_text()

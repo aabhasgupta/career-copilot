@@ -14,9 +14,15 @@ old hand-rolled HTML f-strings. Pages:
   state first (D31).
 - Suggestions: the review queue for inbox findings needing a human decision
   (untracked applications and state conflicts, D20/D24/D28/D31).
-- Preferences: edits profile.yaml's search section; also the base application
-  packet (D22/D23) and the inbox-sync schedule controls.
-- Integrations / API usage: setup + observability (built in later phases).
+- Preferences: edits profile.yaml's search section and the base application
+  packet (D22/D23).
+- Integrations: the setup control panel - resume upload, API key entry
+  (written to .env and applied live, no restart), and schedule
+  install/pause/resume, as compact status rows (D32).
+- API usage: read-only companion to Integrations - what each external API
+  is for, connection status, and known quota (real numbers only where a
+  provider reports them, e.g. JSearch's captured rate-limit headers; honest
+  text elsewhere rather than a fabricated figure, D33).
 
 Design constraints:
 - Same source of truth: reads profile.yaml/the SQLite DB directly - no second
@@ -29,6 +35,7 @@ Design constraints:
 from __future__ import annotations
 
 import html
+import os
 import re
 import threading
 from datetime import datetime, timedelta, timezone
@@ -233,6 +240,77 @@ def _integration_row(check, sched) -> dict:
         "note": note,
         "purpose": _INTEGRATION_PURPOSES.get(key, ""),
     }
+
+
+def _format_reset(reset_at: datetime | None, now: datetime) -> str:
+    if reset_at is None:
+        return ""
+    delta = reset_at - now
+    if delta.total_seconds() <= 0:
+        return "resets soon"
+    if delta.days >= 1:
+        return f"resets in {delta.days}d"
+    hours = int(delta.total_seconds() // 3600)
+    return f"resets in {hours}h" if hours >= 1 else "resets soon"
+
+
+def _usage_rows(jsearch_quota, graph_connected: bool) -> tuple[list[dict], list[dict]]:
+    """Rows for the API usage page: what each service is for, whether it's
+    connected, and whatever quota was last opportunistically captured (never
+    a dedicated call spent just to check status - D33). Read-only and purely
+    informational, so unlike Integrations there's no amber "needs you" dot -
+    only on (connected/available) or off (optional and not connected)."""
+    now = datetime.now(timezone.utc)
+    anthropic_on = bool(os.environ.get("ANTHROPIC_API_KEY"))
+    adzuna_on = bool(os.environ.get("ADZUNA_APP_ID") and os.environ.get("ADZUNA_APP_KEY"))
+    jsearch_on = bool(os.environ.get("JSEARCH_API_KEY"))
+
+    def jsearch_note() -> str:
+        if not jsearch_on:
+            return "not connected"
+        if jsearch_quota is None:
+            return "connected - no calls recorded yet"
+        parts = []
+        if jsearch_quota.remaining is not None and jsearch_quota.limit is not None:
+            parts.append(f"{jsearch_quota.remaining} of {jsearch_quota.limit} left")
+        reset = _format_reset(jsearch_quota.reset_at, now)
+        if reset:
+            parts.append(reset)
+        return " · ".join(parts) if parts else "connected"
+
+    metered = [
+        {"key": "anthropic", "label": "Anthropic API", "dot": "on" if anthropic_on else "off",
+         "note": "connected - pay-as-you-go, no fixed quota" if anthropic_on else "not connected",
+         "purpose": "Powers fit scoring, packet tailoring, resume extraction, and inbox classification."},
+        {"key": "jsearch", "label": "JSearch (RapidAPI)", "dot": "on" if jsearch_on else "off",
+         "note": jsearch_note(),
+         "purpose": "Job discovery - LinkedIn/Indeed/Glassdoor via Google for Jobs' index. "
+                    "200 requests/month on the free tier."},
+        {"key": "adzuna", "label": "Adzuna", "dot": "on" if adzuna_on else "off",
+         "note": "connected - free tier, no published limit" if adzuna_on else "not connected",
+         "purpose": "Broad job discovery aggregator, free tier."},
+        {"key": "graph", "label": "Microsoft Graph", "dot": "on" if graph_connected else "off",
+         "note": "connected - no published limit" if graph_connected else "optional, not connected",
+         "purpose": "Sends the digest and syncs your inbox for reply tracking."},
+    ]
+    free = [
+        {"key": "ats", "label": "Greenhouse / Lever / Ashby", "dot": "on",
+         "note": "always on - no key needed",
+         "purpose": "Public ATS job boards - direct employer postings and full JD text."},
+        {"key": "remotive", "label": "Remotive", "dot": "on",
+         "note": "always on - no key needed",
+         "purpose": "Remote-first tech job board."},
+        {"key": "remoteok", "label": "RemoteOK", "dot": "on",
+         "note": "always on - no key needed",
+         "purpose": "Remote-first tech job board."},
+        {"key": "nominatim", "label": "Nominatim (OpenStreetMap)", "dot": "on",
+         "note": "always on - throttled to ~1 req/sec, results cached forever",
+         "purpose": "Geocodes locations for the \"within N miles of\" preference."},
+        {"key": "uscis", "label": "USCIS H-1B Data Hub", "dot": "on",
+         "note": "always on - downloaded once, refresh manually",
+         "purpose": "Company-level H1B sponsorship filing history."},
+    ]
+    return metered, free
 
 
 def create_app(
@@ -849,12 +927,11 @@ def create_app(
 
     @app.get("/usage", response_class=HTMLResponse)
     def usage() -> str:
-        return render(
-            "/usage",
-            "placeholder.html",
-            heading="API usage",
-            blurb="What each external API is for and how much quota is left.",
-            detail="This page lands in the next build phase.",
-        )
+        from copilot.api_usage import get_jsearch_quota
+        from copilot.setup_status import get_setup_status
+
+        graph_check = get_setup_status(profile_path).get("email")
+        metered, free = _usage_rows(get_jsearch_quota(), bool(graph_check and graph_check.ok))
+        return render("/usage", "usage.html", metered=metered, free=free)
 
     return app

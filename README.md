@@ -68,6 +68,15 @@ Queue/Mark-applied/Set-state buttons on each job's detail page. A separate
 **Applications** tab is the pipeline view - every job you're tracking, most
 active first (interviewing/offer above applied/queued above rejected), with
 applied and last-activity dates - answering "where does everything stand?"
+The **Integrations** tab is the control panel for everything Career Copilot
+connects to - upload/replace your resume, set or update each API key (written
+to `.env` and applied immediately, no restart), and install/pause/resume the
+background sync, all as compact status rows that expand inline when there's
+something to edit. **API usage** is the read-only companion - what each
+external service is for, whether it's connected, and known quota (a real
+"N of 200 left" for JSearch, captured opportunistically from its own response
+headers; an honest "no fixed quota" for the rest rather than a fabricated
+number).
 while the Jobs tab answers "what should I apply to?".
 
 ## Scoring fit
@@ -222,8 +231,8 @@ uv run copilot schedule uninstall
 Scheduling uses launchd rather than cron so a run missed while the laptop was asleep fires on
 wake instead of being skipped. The job runs hourly, but the digest inside it self-gates to at
 most one email a day (`copilot digest --if-due`) - sync stays timely without your own digest
-turning into hourly notifications. Logs go to `data/logs/`. The dashboard's Preferences page
-has an "Inbox sync" card showing the schedule's status with the same Pause/Resume controls.
+turning into hourly notifications. Logs go to `data/logs/`. The dashboard's Integrations page
+shows the schedule's status with the same Install/Pause/Resume controls.
 
 ## Development
 
