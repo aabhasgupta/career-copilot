@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% block title %}Home - Career Copilot{% endblock %}
+
+{% macro explainer() %}
+<article>
+  <h3>What Career Copilot does</h3>
+  <p class="sub">It discovers jobs that match your resume and preferences, scores each
+  for fit with an LLM rubric (including H1B sponsorship signal), and helps you prepare a
+  tailored application - which you send yourself. It then tracks every application,
+  watches your inbox for company replies, and updates each application's status for you.</p>
+  <ul>
+    <li><b>Discover &amp; rank</b> - aggregator + ATS search, ranked by fit, salary, location, recency.</li>
+    <li><b>Track</b> - every application in one pipeline, from applied to offer.</li>
+    <li><b>Inbox sync</b> - confirmations, rejections, and interview invites update status for you.</li>
+    <li><b>Assist, never impersonate</b> - Career Copilot prepares; you review and click submit.</li>
+  </ul>
+</article>
+{% endmacro %}
+
+{% block content %}
+<div class="page-head">
+  <h1>{{ "Welcome to Career Copilot" if needs_setup else "Home" }}</h1>
+  <p>{% if needs_setup %}Let's finish setup, then Career Copilot can start working for you.
+    {% else %}What needs you today, and where your pipeline stands.{% endif %}</p>
+</div>
+
+{% if needs_setup %}
+  {{ explainer() }}
+  <div class="section-title">Finish setup</div>
+  <div class="attn">
+    {% for c in setup.checks %}
+    <div class="attn-item">
+      <span class="dot {{ 'hot' if c.ok else ('warn' if c.required else '') }}"></span>
+      <span class="grow"><b>{{ c.label }}</b>{% if not c.required %} <span class="hint">(optional)</span>{% endif %}
+        <div class="meta">{{ c.detail }}</div></span>
+      <span class="meta">{{ "ready" if c.ok else ("required" if c.required else "optional") }}</span>
+    </div>
+    {% endfor %}
+  </div>
+  <p class="sysl">Configure these in <a href="/integrations">Integrations</a>, or with the
+  CLI (<code>copilot init</code>, then set keys in <code>.env</code> and edit
+  <code>profile.yaml</code>). A guided setup wizard is coming.</p>
+
+{% elif not has_data %}
+  <div class="allclear">You're all set up. Career Copilot hasn't found any jobs yet -
+  run <code>copilot discover</code> to pull in your first matches, then
+  <code>copilot score</code> to rank them for fit.</div>
+  <div class="section-title">Once jobs arrive</div>
+  <ul>
+    <li><a href="/jobs">Jobs</a> - browse and rank what discovery finds.</li>
+    <li><a href="/applications">Applications</a> - track everything you apply to.</li>
+    <li><a href="/preferences">Preferences</a> - tune titles, filters, and ranking.</li>
+  </ul>
+  {{ explainer() }}
+
+{% else %}
+  <div class="section-title">Needs attention</div>
+  {% if pending_suggestions or active_apps or stale_apps %}
+  <div class="attn">
+    {% if pending_suggestions %}
+    <a class="attn-item" href="/suggestions">
+      <span class="dot warn"></span>
+      <span class="grow"><b>{{ pending_suggestions }}</b> inbox suggestion{{ 's' if pending_suggestions > 1 }} to review</span>
+      <span class="meta">Review &rarr;</span>
+    </a>
+    {% endif %}
+    {% for application, job, company in active_apps %}
+    <a class="attn-item" href="/jobs/{{ job.id }}">
+      <span class="dot hot"></span>
+      <span class="grow">{{ company.name }} &middot; {{ job.title }}</span>
+      <span class="meta">{{ state_badge(application.state) }}</span>
+    </a>
+    {% endfor %}
+    {% for application, job, company, days in stale_apps %}
+    <a class="attn-item" href="/jobs/{{ job.id }}">
+      <span class="dot"></span>
+      <span class="grow">{{ company.name }} &middot; {{ job.title }}</span>
+      <span class="meta">applied, quiet {{ days }}d - nudge or mark ghosted</span>
+    </a>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="allclear">You're all caught up - no suggestions to review and nothing needs a nudge.</div>
+  {% endif %}
+
+  {% if has_apps %}
+  <div class="section-title">Pipeline</div>
+  <div class="pipeline">
+    {% for label, count in pipeline %}
+    <a class="pill" href="/applications"><b class="{{ 'zero' if not count }}">{{ count }}</b> {{ label }}</a>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if top_fit %}
+  <div class="section-title">High-fit jobs to act on</div>
+  <article>
+    <div class="tablewrap">
+      <table class="jobs">
+        <thead><tr><th>Fit</th><th>Title</th><th>Company</th><th>Salary</th></tr></thead>
+        <tbody>
+          {% for job, company in top_fit %}
+          <tr>
+            <td>{{ fit_badge(job.fit_score) }}</td>
+            <td><a href="/jobs/{{ job.id }}">{{ job.title }}</a></td>
+            <td>{{ company.name }}</td>
+            <td>{{ format_salary(job) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <a class="showmore" href="/jobs">All jobs &rarr;</a>
+  </article>
+  {% endif %}
+
+  <p class="sysl">Last job discovered {{ last_discovered }} &middot; background sync:
+  {{ schedule_detail }} &middot; <a href="/integrations">manage setup</a></p>
+{% endif %}
+{% endblock %}

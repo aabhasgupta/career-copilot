@@ -52,7 +52,7 @@ needs no Azure subscription.
 1. Open **API permissions** -> **Add a permission** -> **Microsoft Graph** ->
    **Delegated permissions**.
 2. Add all four:
-   - `Mail.Send` - digest and alert emails
+   - `Mail.Send` - the daily digest email
    - `Mail.Read` - inbox sync reads recent messages
    - `Mail.ReadWrite` - filing processed emails into the "Career Copilot" folder
    - `MailboxSettings.ReadWrite` - creating the per-type Outlook categories
@@ -73,7 +73,7 @@ AZURE_CLIENT_ID=<the Application (client) ID from step 1>
 # profile.yaml
 email_integration:
   provider: outlook
-  address: you@hotmail.com   # where digests and alerts get sent
+  address: you@hotmail.com   # where the daily digest gets sent
 ```
 
 ### Step 5 - log in and verify

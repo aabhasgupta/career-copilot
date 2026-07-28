@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}Suggestions - Career Copilot{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>Suggestions</h1>
+  <p>Inbox findings that need your decision - applications made outside Career Copilot,
+  and state conflicts.</p>
+</div>
+
+{% if not cards %}
+<article>
+  <p class="sub">Nothing pending. When inbox sync finds an email it can't act on alone -
+  an application made outside Career Copilot, or a state conflict - it shows up here
+  for your decision.</p>
+</article>
+{% endif %}
+
+{% for s, link_options in cards %}
+{% set proposed = s.proposed_state.value if s.proposed_state else "no state change" %}
+{% set is_conflict = s.kind.value == "state_conflict" %}
+<article>
+  <h3>{{ "State conflict" if is_conflict else "Untracked application" }}:
+    {{ s.company_name or "unknown company" }}{{ (" - " + s.job_title) if s.job_title else "" }}</h3>
+  {% if is_conflict %}
+  <p class="sub">This email implies <b>{{ proposed }}</b>, which contradicts the stored
+  state. Confirm applies your choice below; decline keeps everything as it is. If the
+  email is really about a <i>different</i> application at this company, pick that instead -
+  the flagged application stays untouched either way.</p>
+  {% else %}
+  <p class="sub">This looks like an application you made outside Career Copilot. Confirm
+  to track it (state: <b>{{ proposed }}</b>); decline to ignore this email permanently.
+  If it actually belongs to an application you already track, pick it from the list
+  before confirming and the email is recorded there instead.</p>
+  {% endif %}
+
+  <div class="evidence">From: {{ s.sender or "" }}
+Subject: {{ s.subject or "" }}
+
+{{ (s.body_text or "")[:800] }}</div>
+
+  <div class="btn-row" style="margin-top:.8rem">
+    <form method="post" action="/suggestions/{{ s.id }}/confirm" class="inline"
+      onsubmit="this.querySelector('button').disabled=true">
+      <select name="job_id" style="max-width:26rem">
+        {% if is_conflict %}
+        <option value="">Adopt the email's state ({{ proposed }}) on this application</option>
+        <option value="new">It's a different, new application - create it from this email</option>
+        {% else %}
+        <option value="">Track as a new application</option>
+        {% endif %}
+        {{ link_options }}
+      </select>
+      <button type="submit">Confirm</button>
+    </form>
+    <form method="post" action="/suggestions/{{ s.id }}/decline" class="inline"
+      onsubmit="this.querySelector('button').disabled=true">
+      <button type="submit" class="secondary">Decline</button>
+    </form>
+  </div>
+</article>
+{% endfor %}
+{% endblock %}

@@ -74,6 +74,16 @@ def test_confirm_untracked_never_learns_ats_domain(tmp_path: Path):
         assert session.query(Company).one().domain is None
 
 
+def test_confirm_untracked_never_learns_freemail_domain(tmp_path: Path):
+    """gmail.com identifies a person, not a company - learning it would make
+    every gmail sender a correlation candidate (found live, 2026-07-26)."""
+    with _session(tmp_path) as session:
+        session.add(_untracked_suggestion(sender="recruiter.jane@gmail.com"))
+        session.commit()
+        confirm(session, 1)
+        assert session.query(Company).one().domain is None
+
+
 def test_confirm_untracked_reuses_existing_company(tmp_path: Path):
     with _session(tmp_path) as session:
         session.add(Company(name="Acme"))
@@ -192,20 +202,70 @@ def test_confirm_link_never_moves_state_backward(tmp_path: Path):
         assert session.query(EmailEvent).count() == 1  # but still recorded
 
 
-def test_confirm_link_rejected_for_conflict_suggestions(tmp_path: Path):
+def test_confirm_conflict_as_new_creates_separate_application(tmp_path: Path):
+    """D31: a conflicting email can be about a DIFFERENT application at the
+    same company - confirming with as_new creates a separate one and leaves
+    the flagged (rejected) application untouched."""
     with _session(tmp_path) as session:
-        job = _tracked_job(session)
-        application = Application(job_id=job.id, state=ApplicationState.rejected)
-        session.add(application)
+        job = _tracked_job(session)  # Stripe / ML Engineer
+        rejected = Application(job_id=job.id, state=ApplicationState.rejected)
+        session.add(rejected)
         session.flush()
         session.add(
             _untracked_suggestion(
-                kind=SuggestionKind.state_conflict, application_id=application.id
+                kind=SuggestionKind.state_conflict,
+                application_id=rejected.id,
+                company_name="Stripe",
+                job_title="Staff Platform Engineer",  # a different role
+                proposed_state=ApplicationState.interviewing,
             )
         )
         session.commit()
-        with pytest.raises(ValueError):
-            confirm(session, 1, job_id=job.id)
+
+        confirm(session, 1, as_new=True)
+        session.commit()
+
+        assert session.query(Application).count() == 2
+        assert session.get(Application, rejected.id).state == ApplicationState.rejected  # untouched
+        new_app = session.query(Application).filter(Application.id != rejected.id).one()
+        assert new_app.state == ApplicationState.interviewing
+        assert session.query(Company).count() == 1  # reused, not duplicated
+
+
+def test_confirm_conflict_link_to_other_job_leaves_flagged_untouched(tmp_path: Path):
+    """A conflict can also be resolved by linking the email to a *different*
+    already-tracked application - the flagged one still isn't overwritten."""
+    with _session(tmp_path) as session:
+        flagged_job = _tracked_job(session)
+        flagged = Application(job_id=flagged_job.id, state=ApplicationState.rejected)
+        session.add(flagged)
+        # A second tracked application the email really belongs to.
+        other_company = Company(name="Stripe")  # reuse company is fine
+        session.flush()
+        other_job = Job(
+            company_id=flagged_job.company_id,
+            title="Staff Platform Engineer",
+            source="adzuna",
+            apply_url="https://stripe.com/jobs/2",
+            dedupe_hash="stripe-staff",
+        )
+        session.add(other_job)
+        session.flush()
+        session.add(Application(job_id=other_job.id, state=ApplicationState.applied))
+        session.add(
+            _untracked_suggestion(
+                kind=SuggestionKind.state_conflict,
+                application_id=flagged.id,
+                proposed_state=ApplicationState.interviewing,
+            )
+        )
+        session.commit()
+
+        confirm(session, 1, job_id=other_job.id)
+        session.commit()
+
+        assert session.get(Application, flagged.id).state == ApplicationState.rejected  # untouched
+        assert other_job.application.state == ApplicationState.interviewing  # advanced
 
 
 def test_confirm_link_missing_job_raises(tmp_path: Path):

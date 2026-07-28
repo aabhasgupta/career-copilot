@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% block title %}Preferences - Career Copilot{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>Preferences</h1>
+  <p>Tune what discovery searches for and how listings are ranked. Writes
+  <code>profile.yaml</code> - comments preserved, validated before saving.</p>
+</div>
+
+{{ flash|safe }}
+
+<form method="post" action="/save">
+  <article>
+    <h3>What to search for</h3>
+    <p class="sub">Discovery queries every title in every location on each
+    <code>copilot discover</code> run.</p>
+    <label>Target titles <span class="hint">one per line</span>
+      <textarea name="titles" rows="4">{{ titles|join('\n') }}</textarea>
+    </label>
+    <label>Search locations <span class="hint">one per line, e.g. "United States"</span>
+      <textarea name="locations" rows="3">{{ locations|join('\n') }}</textarea>
+    </label>
+  </article>
+
+  <article>
+    <h3>Filters &mdash; drop jobs entirely</h3>
+    <p class="sub">Applied at discovery; run <code>copilot jobs prune</code> after
+    tightening to re-apply to stored jobs.</p>
+    <label>Salary floor (USD) <span class="hint">jobs with a known salary below this
+    are dropped; jobs that don't state pay are always kept. Blank = no floor.</span>
+      <input name="min_salary" type="number" value="{{ min_salary }}">
+    </label>
+    <label>Dealbreakers <span class="hint">plain English, one per line - e.g.
+    "don't give me jobs based in Alabama", "no clearance jobs", "nothing at Meta".
+    Claude compiles these into precise filters on the next discover/prune.</span>
+      <textarea name="dealbreakers" rows="3">{{ dealbreakers|join('\n') }}</textarea>
+    </label>
+  </article>
+
+  <article>
+    <h3>Preferences &mdash; reorder, never hide</h3>
+    <p class="sub">Listings sort by these instantly; unmatched jobs go last but
+    stay visible.</p>
+    <label>Location preference <span class="hint">one per line, most preferred first:
+    "remote", "within 30 miles of Place, ST", or plain location text</span>
+      <textarea name="location_preference" rows="3">{{ location_preference|join('\n') }}</textarea>
+    </label>
+    <label>Industry preference <span class="hint">one per line, most preferred first.
+    Vocabulary: {{ industry_vocab }}</span>
+      <textarea name="industry_preference" rows="3">{{ industry_preference|join('\n') }}</textarea>
+    </label>
+    <label>Company preference <span class="hint">one per line, most preferred first -
+    their listings rank higher and their public job boards (Greenhouse/Lever/Ashby)
+    are watched directly</span>
+      <textarea name="company_preference" rows="3">{{ company_preference|join('\n') }}</textarea>
+    </label>
+    <label>
+      <input type="checkbox" name="deprioritize_staffing" role="switch" {{ 'checked' if staffing_checked }}>
+      Rank direct employers above staffing agencies
+    </label>
+  </article>
+
+  <div class="btn-row">
+    <button type="submit">Save</button>
+    <span class="footnote">writes profile.yaml &middot; comments preserved &middot; validated before saving</span>
+  </div>
+</form>
+
+<article>
+  <h3>Application packet</h3>
+  <p class="sub">Reusable content - contact details, H1B work-authorization Q&amp;A,
+  and a resume summary - the same for every job, so it's generated once and reused
+  rather than regenerated per posting (docs/DECISIONS.md D22, D23). Regenerate it
+  yourself after editing your resume or profile.yaml; it never happens automatically.</p>
+  {% if packet_text is none %}
+    <p class="sub">Not generated yet.</p>
+  {% else %}
+    <div class="packetbox">{{ packet_text }}</div>
+  {% endif %}
+  <form method="post" action="/packet/base">
+    <button type="submit" class="secondary">Regenerate base packet</button>
+  </form>
+</article>
+
+<p class="footnote">Inbox sync and the hourly background schedule live on the
+<a href="/integrations">Integrations</a> page.</p>
+{% endblock %}

@@ -117,7 +117,14 @@ def build_digest(session: Session, state_path: Path = DIGEST_STATE_PATH) -> Dige
     """Returns None when there's nothing new to report - callers should skip
     sending rather than send an empty digest."""
     since = _last_sent_at(state_path)
-    new_jobs = session.scalars(select(Job).where(Job.created_at >= since)).all()
+    # "New jobs" means jobs discovered by discovery - not jobs created as a
+    # side effect of confirming an inbox suggestion (source="email"), which
+    # are applications the user already made and surface in "State changes"
+    # instead. Counting those as discoveries double-reports and inflates the
+    # subject line (found live 2026-07-26).
+    new_jobs = session.scalars(
+        select(Job).where(Job.created_at >= since, Job.source != "email")
+    ).all()
     state_changes = _state_changes_html(session, since)
     suggestions = _suggestions_html(session)
     if not new_jobs and not state_changes and not suggestions:

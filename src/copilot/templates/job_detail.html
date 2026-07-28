@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}{{ job.title }} - Career Copilot{% endblock %}
+{% block content %}
+<a class="backlink" href="/jobs">&larr; Back to jobs</a>
+
+<article>
+  <h2>{{ job.title }}</h2>
+  <p class="sub">{{ job.company.name if job.company else "?" }} &middot;
+  {{ job.location or "unknown location" }} &middot;
+  {{ format_salary(job) }} &middot; posted {{ format_posted(job) }} &middot; via {{ job.source }}</p>
+  <div class="chips">
+    {% if job.remote %}<span class="chip">Remote</span>{% elif job.remote is not none %}<span class="chip">On-site</span>{% endif %}
+    {% if job.seniority_level %}<span class="chip">{{ job.seniority_level }}</span>{% endif %}
+    {% if job.employment_type %}<span class="chip">{{ job.employment_type }}</span>{% endif %}
+    {% if job.company and job.company.industry %}<span class="chip">{{ job.company.industry }}</span>{% endif %}
+  </div>
+  <p><a href="{{ job.apply_url }}" target="_blank" rel="noopener">Open application &rarr;</a></p>
+</article>
+
+<article>
+  <h3>Application status: <span class="state">{{ state_value }}</span></h3>
+  <div class="btn-row">
+    <form method="post" action="/jobs/{{ job.id }}/queue" class="inline">
+      <button type="submit" class="secondary">Queue</button>
+    </form>
+    <form method="post" action="/jobs/{{ job.id }}/mark-applied" class="inline">
+      <button type="submit">Mark applied</button>
+    </form>
+    <form method="post" action="/jobs/{{ job.id }}/set-state" class="inline">
+      <select name="state">
+        {% for s in states %}<option value="{{ s }}"{{ ' selected' if s == state_value }}>{{ s }}</option>{% endfor %}
+      </select>
+      <button type="submit" class="secondary">Set state</button>
+    </form>
+    {% if application %}
+    <form method="post" action="/jobs/{{ job.id }}/untrack" class="inline"
+      onsubmit="return confirm('Remove all tracking for this job? This deletes its application, state history, and email records.')">
+      <button type="submit" class="secondary">Untrack</button>
+    </form>
+    {% endif %}
+  </div>
+  <p class="footnote">These only record what you did yourself - Career Copilot never
+  submits an application. "Set state" is the manual override for anything the email
+  agent missed, and can move in any direction - including undoing a wrong state.
+  "Untrack" removes the application entirely (state history and email records
+  included) - the undo for tracking something by mistake.</p>
+</article>
+
+{% if job.fit_score is none %}
+<article><p class="sub">Not scored yet. Run <code>copilot score</code> to add this job.</p></article>
+{% else %}
+<article>
+  <h3>Fit: {{ "%.0f"|format(job.fit_score) }}/100</h3>
+  <p>{{ job.fit_reasoning or "" }}</p>
+  <table class="dims">
+    {% for name, value in dimensions %}
+    <tr><td>{{ name }}</td><td>{{ (("%.0f/100"|format(value)) if value is not none else "-") }}</td></tr>
+    {% endfor %}
+  </table>
+  <p class="sub">Visa signal from this JD: {{ job.visa_signal.value }}</p>
+</article>
+{% endif %}
+
+{% if sponsorship %}
+<article>
+  <h3>Company sponsorship history</h3>
+  <p class="sub">Historical, company-wide evidence from public USCIS filing data -
+  not a live policy, and never blended into the fit score above (see docs/DECISIONS.md D18).</p>
+  <p><b>{{ sponsorship.status }}</b>{{ (" - " + sponsorship.evidence) if sponsorship.evidence else "" }}</p>
+</article>
+{% endif %}
+
+{% if jd_text %}
+<article>
+  <details>
+    <summary>Job description</summary>
+    <div class="jd">{{ jd_text }}</div>
+  </details>
+</article>
+{% else %}
+<article>
+  <p class="sub">No description stored for this posting - open the application to read it
+  on the employer's site.</p>
+</article>
+{% endif %}
+{% endblock %}

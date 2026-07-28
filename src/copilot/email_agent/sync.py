@@ -287,7 +287,7 @@ def _process_message(
                 )
             )
         _maybe_alert(
-            provider, profile, classification.classified_type, message,
+            classification.classified_type, message,
             classification.company_name or "unknown company", classification.job_title,
             result, dry_run=dry_run,
         )
@@ -316,7 +316,13 @@ def _process_message(
                     body_text=message.body_text,
                     received_at=message.received_at,
                     company_name=company.name,
-                    job_title=job.title,
+                    # The EMAIL's extracted title, not the tracked job's: if
+                    # the user resolves the conflict as "this is a different,
+                    # new application" (D31), the new job must be built from
+                    # what the email said, never a duplicate of the flagged
+                    # job's title (whose dedupe hash would collide back onto
+                    # the flagged application).
+                    job_title=classification.job_title,
                     proposed_state=implied,
                     classified_type=classification.classified_type,
                 )
@@ -358,15 +364,17 @@ def _process_message(
             if not skip_filing:
                 provider.file_message(message.message_id, category=category)
 
-    _maybe_alert(
-        provider, profile, classification.classified_type, message,
-        company.name, job.title, result, dry_run=dry_run,
-    )
+    # Stale events are old news by definition (a duplicate ATS send, our own
+    # historical mail) - recording them is right, buzzing the user is not
+    # (found live 2026-07-26: a notification for an invite already acted on).
+    if relation != "stale":
+        _maybe_alert(
+            classification.classified_type, message,
+            company.name, job.title, result, dry_run=dry_run,
+        )
 
 
 def _maybe_alert(
-    provider: EmailProvider,
-    profile: Profile,
     event_type: EmailEventType,
     message: InboundMessage,
     company_name: str,
@@ -384,9 +392,9 @@ def _maybe_alert(
         )
         return
     result.alerts += 1
-    result.actions.append(f"alert sent: {event_type.value} at {company_name}")
+    result.actions.append(f"desktop notification: {event_type.value} at {company_name}")
     if not dry_run:
-        send_event_alert(provider, profile, event_type, message, company_name, job_title)
+        send_event_alert(event_type, message, company_name, job_title)
 
 
 def _state_setter(session: Session, application_id: int) -> str:

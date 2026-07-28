@@ -76,7 +76,7 @@ Every third-party service this project talks to, what it's for, how it's authent
 - **Auth:** MSAL device-code flow against a personal-Microsoft-account app registration ("Personal Microsoft accounts only", public client flows enabled, no client secret). `AZURE_CLIENT_ID` in `.env` identifies the app; `copilot email login` opens the device-code prompt once and caches the resulting token at `data/email_token.json` (gitignored) for silent renewal after that.
 - **Scopes:** `Mail.Send`, `Mail.Read`, `Mail.ReadWrite`, `MailboxSettings.ReadWrite` - all four exercised as of Phase 4 (`MailboxSettings.ReadWrite` is what allows creating master categories).
 - **Endpoints:**
-  - `POST /v1.0/me/sendMail` - digest and alert emails
+  - `POST /v1.0/me/sendMail` - digest emails (alert emails existed briefly and were dropped, D30)
   - `GET /v1.0/me/mailFolders/inbox/messages?$filter=receivedDateTime ge ...` - inbox sync fetch, paged via `@odata.nextLink`, with `Prefer: outlook.body-content-type="text"` for plain-text bodies; `$select` includes `internetMessageId`, the move-stable idempotency key (Graph ids change on every move)
   - `GET`/`POST /v1.0/me/mailFolders` - find/create the "Career Copilot" folder
   - `GET`/`POST /v1.0/me/mailFolders/{id}/childFolders` - find/create the "Process" intake subfolder, plus `GET .../messages` on it with no date filter (D28: the folder's contents are the request)

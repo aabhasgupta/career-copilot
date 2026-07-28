@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}Jobs - Career Copilot{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>Jobs</h1>
+  <p>{{ jobs|length }} of {{ total }} shown &middot; {{ scored }} scored for fit. Most
+  recent and best fit first. Unscored jobs are never treated as low fit - they just
+  haven't run through <code>copilot score</code> yet. Click a title for the full breakdown.</p>
+</div>
+
+<form method="get" action="/jobs" class="filterbar">
+  <input type="number" name="min_fit" placeholder="Min fit" value="{{ min_fit }}">
+  <input type="text" name="location" placeholder="Location contains..." value="{{ location }}">
+  <input type="number" name="max_age" placeholder="Max age (days)" value="{{ max_age }}">
+  <select name="sort" aria-label="Sort by">
+    <option value="fit"{{ ' selected' if sort == 'fit' }}>Best fit</option>
+    <option value="new"{{ ' selected' if sort == 'new' }}>Newest</option>
+    <option value="salary"{{ ' selected' if sort == 'salary' }}>Highest salary</option>
+  </select>
+  <label class="inline-check"><input type="checkbox" name="hide_tracked" value="true"
+    {{ 'checked' if hide_tracked }}> Hide tracked</label>
+  <button type="submit">Apply</button>
+  {% if min_fit or location or sort != 'fit' or hide_tracked %}<a class="clear" href="/jobs">Reset</a>{% endif %}
+</form>
+
+<article>
+  <div class="tablewrap">
+    <table class="jobs">
+      <thead><tr>
+        <th>Fit</th><th>Title</th><th>Company</th><th>Location</th>
+        <th>Salary</th><th>Posted</th><th>Visa</th><th></th>
+      </tr></thead>
+      <tbody>
+        {% for job in jobs %}
+        <tr>
+          <td>{{ fit_badge(job.fit_score) }}</td>
+          <td><a href="/jobs/{{ job.id }}">{{ job.title }}</a></td>
+          <td>{{ job.company.name if job.company else "?" }}</td>
+          <td>{{ job.location or "unknown" }}</td>
+          <td>{{ format_salary(job) }}</td>
+          <td>{{ format_posted(job) }}</td>
+          <td>{{ visa_cell(job) }}</td>
+          <td>
+            {% if job.application %}{{ state_badge(job.application.state) }}
+            {% else %}<a href="{{ job.apply_url }}" target="_blank" rel="noopener">Apply &rarr;</a>{% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="8" class="sub">No jobs match these filters.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% if show_more_url %}<a class="showmore" href="{{ show_more_url }}">Show 50 more &darr;</a>{% endif %}
+</article>
+{% endblock %}

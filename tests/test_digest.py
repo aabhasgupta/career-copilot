@@ -102,6 +102,41 @@ def test_build_digest_respects_last_sent_state(tmp_path: Path):
         assert result is None
 
 
+def test_email_created_jobs_are_not_counted_as_new_discoveries(tmp_path: Path):
+    """A job created by confirming an inbox suggestion (source='email') is an
+    application the user already made - it belongs in State changes, not the
+    'N new jobs' discovery count (found live 2026-07-26)."""
+    with _session(tmp_path) as session:
+        company = Company(name="Acme")
+        session.add(company)
+        session.flush()
+        session.add(
+            Job(
+                company_id=company.id,
+                title="Discovered Role",
+                source="adzuna",
+                apply_url="https://example.com/1",
+                dedupe_hash="d1",
+                fit_score=80,
+            )
+        )
+        session.add(
+            Job(
+                company_id=company.id,
+                title="Applied Outside",
+                source="email",  # created by confirming a suggestion
+                apply_url="",
+                dedupe_hash="e1",
+            )
+        )
+        session.commit()
+
+        result = build_digest(session, state_path=tmp_path / "state.json")
+        assert result is not None
+        assert result.new_count == 1  # only the discovered job
+        assert "Applied Outside" not in result.body_html
+
+
 def test_digest_due_gates_hourly_schedule_to_daily(tmp_path: Path):
     state_path = tmp_path / "state.json"
     assert digest_due(state_path)  # never sent
@@ -134,3 +169,21 @@ def test_no_high_fit_jobs_shows_fallback_message(tmp_path: Path):
         assert result is not None
         assert result.high_fit_jobs == []
         assert "None scored" in result.body_html
+
+
+def test_html_to_text_preview_renders_state_changes_as_lines():
+    from copilot.cli import _html_to_text
+
+    body = (
+        "<p>1 new job since the last digest.</p>"
+        "<h3>State changes</h3><ul>"
+        "<li>Stripe - ML Engineer: applied &rarr; interviewing (email)</li>"
+        "<li>Acme - Data Eng: found &rarr; applied (you)</li>"
+        "</ul>"
+    )
+    text = _html_to_text(body)
+    lines = text.splitlines()
+    assert "State changes" in lines
+    assert "- Stripe - ML Engineer: applied → interviewing (email)" in lines
+    assert "- Acme - Data Eng: found → applied (you)" in lines
+    assert "<" not in text  # all tags stripped

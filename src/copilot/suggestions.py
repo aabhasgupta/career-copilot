@@ -31,6 +31,12 @@ from copilot.discovery.dedupe import dedupe_hash
 from copilot.email_agent.provider import EmailProvider
 
 
+class AlreadyResolved(ValueError):
+    """Confirming/declining a suggestion that's no longer pending. A repeat
+    of an action that already happened (double-click, browser re-POST) - the
+    dashboard treats it as a no-op, not an error."""
+
+
 def list_pending(session: Session) -> list[Suggestion]:
     return list(
         session.scalars(
@@ -51,26 +57,26 @@ def confirm(
     provider: EmailProvider | None = None,
     *,
     job_id: int | None = None,
+    as_new: bool = False,
 ) -> Suggestion:
     """Apply a suggestion. `provider` files the email afterward when given;
     None (e.g. tests, offline) skips filing - the DB writes are the truth,
     the mailbox is a mirror (D5), so filing later or never is safe.
 
-    `job_id` links an untracked-application suggestion to a job you already
-    track instead of creating stub records - the human knows which
-    application an email belongs to even when the correlator couldn't tell
-    (D28). Only meaningful for untracked suggestions; conflicts already know
-    their application."""
+    `job_id` says "this email belongs to that already-tracked job" - the
+    human knows what the correlator couldn't tell (D28). `as_new` says "this
+    is a brand-new application, create it from the email". Both work on
+    conflicts too (D31): a conflicting email is sometimes about a *different*
+    application at the same company, and neither adopting its state nor
+    discarding it would be right - either way the flagged application is
+    left untouched."""
     suggestion = _pending(session, suggestion_id)
-    if job_id is not None and suggestion.kind != SuggestionKind.untracked_application:
-        raise ValueError("Only untracked-application suggestions can be linked to a job.")
 
-    if suggestion.kind == SuggestionKind.untracked_application:
-        if job_id is not None:
-            application = _link_to_existing_job(session, suggestion, job_id)
-        else:
-            application = _create_tracked_application(session, suggestion)
-    else:  # state_conflict: the human sided with the email's implied state
+    if job_id is not None:
+        application = _link_to_existing_job(session, suggestion, job_id)
+    elif suggestion.kind == SuggestionKind.untracked_application or as_new:
+        application = _create_tracked_application(session, suggestion)
+    else:  # state_conflict, default: the human sided with the email's state
         application = session.get(Application, suggestion.application_id)
         event = _record_email_event(session, suggestion, application.id)
         if suggestion.proposed_state is not None:
@@ -99,7 +105,9 @@ def _pending(session: Session, suggestion_id: int) -> Suggestion:
     if suggestion is None:
         raise LookupError(f"No suggestion with id {suggestion_id}")
     if suggestion.status != SuggestionStatus.pending:
-        raise ValueError(f"Suggestion {suggestion_id} is already {suggestion.status.value}")
+        raise AlreadyResolved(
+            f"Suggestion {suggestion_id} is already {suggestion.status.value}"
+        )
     return suggestion
 
 
@@ -132,7 +140,11 @@ def _create_tracked_application(session: Session, suggestion: Suggestion) -> App
     application = get_or_create_application(session, job.id)
     event = _record_email_event(session, suggestion, application.id)
     state = suggestion.proposed_state or ApplicationState.applied
-    advance_from_email(application, state, event.id)
+    # Forward-only, same rule as linking: if the dedupe resolved "new" to an
+    # application that already exists (identical company+title), this must
+    # not become a silent overwrite of its state.
+    if state_relation(application.state, state) == "forward":
+        advance_from_email(application, state, event.id)
     return application
 
 

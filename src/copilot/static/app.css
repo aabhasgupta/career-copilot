@@ -1,0 +1,268 @@
+/* Career Copilot dashboard - custom layer on top of Pico.
+   Pico handles typography, forms, tables, buttons, and cards (<article>).
+   This file adds: brand theming, the left-sidebar layout, nav, and the
+   domain-specific badges (fit / visa / application state) the app relies on. */
+
+:root {
+  --pico-primary: #4f5bd5;
+  --pico-primary-hover: #3f49bd;
+  --pico-primary-focus: rgba(79, 91, 213, 0.25);
+  --pico-border-radius: 8px;
+  /* Denser than Pico's document defaults - this is an app, not an article. */
+  --pico-block-spacing-vertical: 1rem;
+  --pico-block-spacing-horizontal: 1.25rem;
+  --pico-card-box-shadow: 0 1px 2px rgba(26, 31, 71, .06), 0 3px 10px rgba(26, 31, 71, .04);
+  --pico-card-border-color: #e7e8f0;
+  --cc-accent: #4f5bd5;
+  --cc-accent-2: #7a5cd6;
+  --cc-accent-soft: #b9c0ff;
+  --cc-sidebar-w: 240px;
+}
+
+/* Base type a notch smaller than Pico's reading default - beats Pico's own
+   responsive :root font-size rules by equal specificity + later source order. */
+:root { font-size: 15px; }
+
+body { margin: 0; }
+h1, h2, h3 { line-height: 1.2; }
+
+/* ---- Layout: fixed sidebar + scrolling content ---- */
+.layout { display: flex; min-height: 100vh; align-items: stretch; }
+
+.sidebar {
+  width: var(--cc-sidebar-w);
+  flex: 0 0 var(--cc-sidebar-w);
+  background: linear-gradient(165deg, #171a38 0%, #2c2a6b 60%, #4f3d8f 100%);
+  color: #fff;
+  padding: 1.6rem 1.1rem 2rem;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+}
+
+.content { flex: 1 1 auto; min-width: 0; padding: 2rem 2.2rem 3rem; }
+.content > .inner { max-width: 900px; margin: 0 auto; }
+
+/* ---- Brand ---- */
+.brand {
+  display: flex; align-items: center; gap: .5rem;
+  font-size: 1.35rem; font-weight: 750; letter-spacing: -.02em;
+  color: #fff; text-decoration: none;
+}
+.brand .mark { font-size: 1.5rem; line-height: 1; }
+.brand em { font-style: normal; color: #b9c0ff; }
+.tagline { margin: .5rem 0 1.6rem; color: #c4c9ec; font-size: .78rem; line-height: 1.5; }
+.tagline b { color: #fff; font-weight: 600; }
+
+/* ---- Sidebar nav ---- */
+.nav-group { margin-bottom: 1.4rem; }
+.nav-group-title {
+  color: #8f95c9; font-size: .68rem; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .08em; margin: 0 .6rem .4rem;
+}
+.nav a {
+  display: flex; align-items: center; justify-content: space-between;
+  color: #cfd3f0; text-decoration: none; padding: .5rem .7rem;
+  border-radius: 8px; font-size: .9rem; font-weight: 550; margin-bottom: .12rem;
+}
+.nav a .label { display: flex; align-items: center; gap: .6rem; }
+.nav a:hover { background: rgba(255,255,255,.08); color: #fff; }
+.nav a.active { background: rgba(255,255,255,.14); color: #fff;
+  box-shadow: inset 3px 0 0 var(--cc-accent-soft); }
+.nav .ico { width: 17px; height: 17px; flex: 0 0 auto;
+  fill: none; stroke: currentColor; stroke-width: 2;
+  stroke-linecap: round; stroke-linejoin: round; opacity: .9; }
+
+.badge {
+  background: #e8590c; color: #fff; border-radius: 999px; font-size: .7rem;
+  font-weight: 700; padding: .05rem .5rem; min-width: 1.4rem; text-align: center;
+}
+
+/* ---- Page headers ---- */
+.page-head { margin-bottom: 1.4rem; }
+.page-head h1 { margin: 0 0 .2rem; font-size: 1.5rem; letter-spacing: -.01em; }
+.page-head p { margin: 0; color: var(--pico-muted-color); font-size: .92rem; }
+
+article { margin-bottom: 1.2rem; }
+article > h2:first-child, article > h3:first-child { margin-top: 0; }
+.sub { color: var(--pico-muted-color); font-size: .88rem; margin-top: -.2rem; }
+
+/* ---- Flash messages ---- */
+.flash { padding: .7rem 1rem; border-radius: 10px; margin-bottom: 1.1rem; font-size: .9rem; }
+.flash.ok  { background: #e7f6ec; color: #1d5e33; border: 1px solid #bfe5cb; }
+.flash.err { background: #fdecec; color: #8a2323; border: 1px solid #f2c7c7; white-space: pre-wrap; }
+
+/* ---- Tables ---- */
+.tablewrap { overflow-x: auto; }
+table.jobs { font-size: .88rem; margin: 0; }
+table.jobs th { font-size: .72rem; text-transform: uppercase; letter-spacing: .04em;
+  white-space: nowrap; color: var(--pico-muted-color); }
+table.jobs td { vertical-align: top; }
+
+/* ---- Badges: fit score ---- */
+.fit { font-weight: 700; padding: .15rem .55rem; border-radius: 999px; font-size: .82rem; }
+.fit.good { background: #e7f6ec; color: #1d5e33; }
+.fit.mid  { background: #fff6e0; color: #8a6100; }
+.fit.low  { background: #fdecec; color: #8a2323; }
+.fit.unscored { color: var(--pico-muted-color); font-weight: 500; }
+
+/* ---- Badges: visa signal ---- */
+.visa { font-size: .82rem; white-space: nowrap; }
+.visa.yes { color: #1d5e33; font-weight: 600; }
+.visa.no  { color: #8a2323; font-weight: 600; }
+.visa.evidence { color: var(--cc-accent); font-weight: 600; }
+.visa.none { color: var(--pico-muted-color); }
+
+/* ---- Badges: application state ---- */
+.state { font-weight: 700; padding: .15rem .55rem; border-radius: 999px; font-size: .82rem;
+  background: #eef0fb; color: var(--cc-accent); white-space: nowrap; }
+.state.terminal { background: #f4ecec; color: #8a2323; }
+.state.won { background: #e7f4ec; color: #1d5e33; }
+
+/* ---- Filter bar ---- */
+.filterbar { display: flex; gap: .6rem; margin-bottom: 1.1rem; flex-wrap: wrap; align-items: center; }
+.filterbar input, .filterbar select { width: auto; margin: 0; }
+.filterbar input[name=location] { flex: 1 1 180px; }
+.filterbar .clear { color: var(--pico-muted-color); font-size: .85rem; }
+.filterbar .inline-check { display: flex; align-items: center; gap: .4rem; margin: 0;
+  font-size: .88rem; white-space: nowrap; }
+.filterbar .inline-check input { width: auto; margin: 0; }
+
+/* ---- Meta chips (job detail) ---- */
+.chips { display: flex; flex-wrap: wrap; gap: .4rem; margin: .1rem 0 .8rem; }
+.chip { font-size: .78rem; font-weight: 600; padding: .2rem .6rem; border-radius: 999px;
+  background: #eef0fb; color: var(--cc-accent); text-transform: capitalize; }
+
+/* ---- Job description ---- */
+details > summary { cursor: pointer; font-weight: 650; }
+.jd { white-space: pre-wrap; margin-top: .9rem; font-size: .9rem; line-height: 1.55;
+  max-height: 460px; overflow-y: auto; padding-right: .4rem; }
+
+/* ---- Misc ---- */
+.dims td:last-child { text-align: right; font-weight: 600; }
+.backlink { display: inline-block; margin-bottom: 1rem; color: var(--pico-muted-color);
+  text-decoration: none; font-size: .85rem; }
+.packetbox { white-space: pre-wrap; background: var(--pico-code-background-color);
+  border: 1px solid var(--pico-muted-border-color); border-radius: 10px; padding: 1rem;
+  font-family: ui-monospace, monospace; font-size: .82rem; max-height: 320px; overflow-y: auto; }
+.evidence { background: var(--pico-code-background-color); border-left: 3px solid var(--cc-accent);
+  padding: .7rem .9rem; white-space: pre-wrap; font-size: .85rem; max-height: 260px;
+  overflow-y: auto; border-radius: 0 8px 8px 0; }
+.footnote { color: var(--pico-muted-color); font-size: .8rem; }
+.btn-row { display: flex; gap: .6rem; flex-wrap: wrap; align-items: center; }
+.showmore { display: inline-block; margin-top: .8rem; font-size: .9rem; }
+.hint { font-weight: 400; color: var(--pico-muted-color); font-size: .82rem; }
+
+/* Compact secondary buttons inside rows */
+.btn-row button, .btn-row .button { margin: 0; }
+form.inline { margin: 0; display: inline; }
+
+/* ---- Home: command center ---- */
+.section-title { font-size: .78rem; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .06em; color: var(--pico-muted-color); margin: 1.6rem 0 .7rem; }
+.section-title:first-child { margin-top: 0; }
+
+/* Needs-attention items */
+.attn { display: flex; flex-direction: column; gap: .5rem; }
+.attn-item { display: flex; align-items: center; gap: .7rem; padding: .8rem 1rem;
+  border: 1px solid var(--pico-card-border-color); border-radius: 10px;
+  background: var(--pico-card-background-color); text-decoration: none; color: inherit; }
+.attn-item:hover { border-color: var(--cc-accent); }
+.attn-item .dot { width: .55rem; height: .55rem; border-radius: 50%; flex: 0 0 auto; background: var(--cc-accent); }
+.attn-item .dot.warn { background: #e8590c; }
+.attn-item .dot.hot { background: #1d5e33; }
+.attn-item .grow { flex: 1 1 auto; }
+.attn-item .meta { color: var(--pico-muted-color); font-size: .84rem; }
+.allclear { padding: 1rem 1.1rem; border-radius: 10px; background: #e7f6ec; color: #1d5e33;
+  border: 1px solid #bfe5cb; font-size: .92rem; }
+
+/* Pipeline chips */
+.pipeline { display: flex; flex-wrap: wrap; gap: .55rem; }
+.pill { display: inline-flex; align-items: baseline; gap: .4rem; text-decoration: none;
+  padding: .45rem .8rem; border-radius: 999px; border: 1px solid var(--pico-card-border-color);
+  background: var(--pico-card-background-color); color: inherit; font-size: .86rem; }
+.pill:hover { border-color: var(--cc-accent); }
+.pill b { font-size: 1.05rem; font-weight: 750; }
+.pill .zero { opacity: .45; }
+
+/* Clickable stat tiles */
+.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: .8rem; margin: 0; }
+.stat { background: var(--pico-card-background-color); border: 1px solid var(--pico-card-border-color);
+  border-radius: 10px; padding: 1rem 1.1rem; text-decoration: none; color: inherit; display: block; }
+.stat:hover { border-color: var(--cc-accent); }
+.stat .num { font-size: 1.7rem; font-weight: 750; letter-spacing: -.02em; line-height: 1; }
+.stat .label { color: var(--pico-muted-color); font-size: .8rem; margin-top: .35rem; }
+.sysl, .syslink { color: var(--pico-muted-color); font-size: .84rem; }
+
+/* ---- Integrations: compact status rows ---- */
+.health { display: flex; align-items: center; gap: .45rem; font-size: .98rem;
+  font-weight: 650; margin-bottom: 1.8rem; }
+.health .ic { font-size: 1rem; }
+.health.ok   { color: #1d7a44; }
+.health.todo { color: #8a6100; }
+.health .count { color: var(--pico-muted-color); font-weight: 400; }
+
+.integ-section { margin-bottom: 1.9rem; }
+.integ-section h2 { font-size: .7rem; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .07em; color: var(--pico-muted-color); margin: 0 0 .2rem; }
+
+.irow { display: flex; align-items: center; gap: .7rem; padding: .62rem .1rem;
+  border-bottom: 1px solid var(--pico-card-border-color); }
+.irow:last-child { border-bottom: none; }
+.irow.needs { background: #fffaf0; border-bottom-color: transparent; border-radius: 8px;
+  padding-left: .6rem; padding-right: .6rem; }
+
+.rdot { width: .58rem; height: .58rem; border-radius: 50%; flex: 0 0 auto; }
+.rdot.on   { background: #2fa360; }
+.rdot.warn { background: #e8590c; }
+.rdot.off  { background: transparent; box-shadow: inset 0 0 0 1.5px var(--pico-muted-border-color); }
+
+.rname { font-weight: 600; font-size: .92rem; }
+.rname .hint { font-weight: 400; font-size: .78rem; }
+.rnote { margin-left: auto; color: var(--pico-muted-color); font-size: .84rem;
+  text-align: right; white-space: nowrap; }
+.irow.needs .rnote { color: #8a6100; }
+.ract { flex: 0 0 auto; display: flex; align-items: center; }
+.ract:empty { display: none; }
+.rname + .ract { margin-left: auto; }  /* keep action right-aligned when there's no note */
+.rlink { font-size: .85rem; white-space: nowrap; text-decoration: none; color: var(--cc-accent); font-weight: 600; }
+.rlink:hover { text-decoration: underline; }
+button.mini { margin: 0; width: auto; padding: .2rem .8rem; font-size: .8rem;
+  --pico-font-weight: 600; }
+
+/* Expandable config rows: the summary looks exactly like a status row until
+   opened, then reveals its editor inline (native <details>, no JS). */
+details.irow-edit { border-bottom: 1px solid var(--pico-card-border-color); }
+details.irow-edit:last-child { border-bottom: none; }
+details.irow-edit > summary { list-style: none; cursor: pointer; border-bottom: none; }
+details.irow-edit > summary::-webkit-details-marker { display: none; }
+details.irow-edit > summary::marker { content: ""; }
+/* Pico styles summary as an accordion with a far-right chevron (::after); the
+   row already has its own "Update ›" affordance, so drop Pico's. */
+details.irow-edit > summary::after { display: none !important; }
+details.irow-edit > summary:hover .rlink { text-decoration: underline; }
+details.irow-edit[open] { background: var(--pico-code-background-color); border-radius: 8px; }
+details.irow-edit[open] > summary .rlink { color: var(--pico-muted-color); }
+details.irow-edit.needs { background: #fffaf0; border-radius: 8px; border-bottom-color: transparent; }
+
+.editor { padding: .2rem 1rem 1rem 1.4rem; }
+.editor-form { margin: 0; max-width: 440px; }
+.editor-form label { display: block; font-size: .82rem; font-weight: 600; margin-bottom: .5rem; }
+.editor-form input { margin-top: .25rem; margin-bottom: 0; font-size: .9rem;
+  padding: .42rem .6rem; height: auto; }
+.editor-form input[type=file] { padding: .3rem; font-weight: 400; }
+.editor-form .hint { display: block; margin: 0 0 .7rem; font-weight: 400; }
+.editor-form button.mini { margin-top: .8rem; }
+
+.cmd { font-family: ui-monospace, monospace; font-size: .82rem;
+  background: var(--pico-code-background-color); padding: .08rem .38rem; border-radius: 6px; }
+
+/* ---- Responsive: stack the sidebar on top ---- */
+@media (max-width: 900px) {
+  .layout { flex-direction: column; }
+  .sidebar { width: 100%; flex-basis: auto; height: auto; position: static; padding: 1.1rem 1.2rem; }
+  .content { padding: 1.4rem 1.2rem 2.5rem; }
+  .nav-group { margin-bottom: .8rem; }
+}

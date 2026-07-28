@@ -241,7 +241,12 @@ def test_sync_dry_run_writes_and_moves_nothing(tmp_path, monkeypatch):
         assert not (tmp_path / "state.json").exists()  # watermark not advanced
 
 
-def test_sync_alerts_for_interview_invite_but_not_confirmation(tmp_path, monkeypatch):
+def test_sync_notifies_for_interview_invite_but_not_confirmation(tmp_path, monkeypatch):
+    notifications: list[str] = []
+    monkeypatch.setattr(
+        "copilot.email_agent.sync.send_event_alert",
+        lambda event_type, message, company, title: notifications.append(company),
+    )
     with _session(tmp_path) as session:
         _seed_tracked_application(session)
         provider = FakeProvider([_message()])
@@ -249,13 +254,14 @@ def test_sync_alerts_for_interview_invite_but_not_confirmation(tmp_path, monkeyp
 
         _stub_classifier(monkeypatch, classified_type=EmailEventType.confirmation)
         run_sync(session, provider, profile, state_path=tmp_path / "state.json")
-        assert provider.sent == []
+        assert notifications == []
+        assert provider.sent == []  # D30: alerts never send email
 
         provider.messages = [_message(message_id="m2", subject="Interview with Stripe")]
         _stub_classifier(monkeypatch, classified_type=EmailEventType.interview_invite)
         run_sync(session, provider, profile, state_path=tmp_path / "state.json")
-        assert len(provider.sent) == 1
-        assert "Interview invite" in provider.sent[0]
+        assert notifications == ["Stripe"]
+        assert provider.sent == []
 
 
 def test_known_thread_bypasses_prefilter_and_correlates(tmp_path, monkeypatch):
@@ -333,6 +339,28 @@ def test_second_message_in_pending_thread_does_not_duplicate_suggestion(tmp_path
         third = run_sync(session, provider, profile, state_path=tmp_path / "state.json")
         assert third.skipped_seen == 0  # never recorded, but...
         assert session.query(Suggestion).count() == 1  # ...still exactly one
+
+
+def test_stale_event_records_but_does_not_notify(tmp_path, monkeypatch):
+    """A duplicate/late invite that implies a state already reached is stale -
+    recorded, but no notification (it's old news, found live 2026-07-26)."""
+    notifications: list[str] = []
+    monkeypatch.setattr(
+        "copilot.email_agent.sync.send_event_alert",
+        lambda *a, **k: notifications.append(a),
+    )
+    with _session(tmp_path) as session:
+        _seed_tracked_application(session, state=ApplicationState.interviewing)
+        _stub_classifier(monkeypatch, classified_type=EmailEventType.interview_invite)
+        provider = FakeProvider([_message()])
+
+        result = run_sync(
+            session, provider, _profile(tmp_path), state_path=tmp_path / "state.json"
+        )
+
+        assert result.events == 1  # recorded
+        assert result.advanced == 0  # already interviewing - stale
+        assert notifications == []  # but not buzzed
 
 
 def test_pending_thread_followup_costs_no_claude_calls(tmp_path, monkeypatch):

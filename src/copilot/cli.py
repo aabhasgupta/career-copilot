@@ -576,10 +576,18 @@ def inbox_confirm(
         "list') instead of creating a new company/job from the email - for "
         "when you know which application it belongs to and the agent didn't.",
     ),
+    new: bool = typer.Option(
+        False,
+        "--new",
+        help="For a state conflict: the email is about a different, NEW "
+        "application - create it from the email and leave the flagged "
+        "application untouched.",
+    ),
 ) -> None:
     """Apply a suggestion: create the tracked application (untracked kind)
     or adopt the email's implied state (conflict kind), then file the email.
-    With --job, attach the email to a job you already track instead."""
+    With --job, attach the email to a job you already track; with --new,
+    resolve a conflict by creating a separate new application instead."""
     profile = load_profile()
 
     from copilot.db import get_engine, get_session
@@ -589,13 +597,18 @@ def inbox_confirm(
     with get_session(get_engine()) as session:
         try:
             provider = get_provider(profile)
-            suggestion = confirm(session, suggestion_id, provider, job_id=job)
+            suggestion = confirm(session, suggestion_id, provider, job_id=job, as_new=new)
             session.commit()
         except (LookupError, ValueError) as exc:
             console.print(f"[red]{exc}[/]")
             raise typer.Exit(1) from exc
     if job is not None:
         console.print(f"[green]Confirmed.[/] Email recorded against job {job}.")
+    elif new:
+        console.print(
+            f"[green]Confirmed.[/] Created a new application for "
+            f"{suggestion.company_name or '?'}; the flagged one is untouched."
+        )
     else:
         console.print(
             f"[green]Confirmed.[/] {suggestion.company_name or '?'} is now tracked"
@@ -681,6 +694,24 @@ def schedule_uninstall() -> None:
         console.print("[yellow]Nothing installed.[/]")
 
 
+def _html_to_text(html_body: str) -> str:
+    """Rough HTML-to-text for the digest dry-run preview - so `--dry-run`
+    shows the actual content (State changes, high-fit table) the way inbox
+    sync's dry-run does, not just the subject line. Not a general converter:
+    it only needs to handle the tags build_digest emits."""
+    import re
+    from html import unescape
+
+    text = html_body
+    text = re.sub(r"</(p|h3|tr|table|ul|li)>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"<li>", "  - ", text, flags=re.IGNORECASE)
+    text = re.sub(r"<t[dh][^>]*>", " | ", text, flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", "", text)
+    text = unescape(text)
+    lines = [line.strip(" |") for line in text.splitlines()]
+    return "\n".join(line for line in lines if line.strip())
+
+
 @app.command()
 def digest(
     dry_run: bool = typer.Option(
@@ -719,8 +750,9 @@ def digest(
         console.print("[yellow]Nothing new since the last digest.[/] No email sent.")
         return
 
-    console.print(f"{result.subject}")
+    console.print(f"[bold]{result.subject}[/]")
     if dry_run:
+        console.print(_html_to_text(result.body_html) or "[dim](empty body)[/]")
         console.print("[dim]--dry-run: not sending, not marking sent.[/]")
         return
 
@@ -744,20 +776,34 @@ def digest(
 @app.command()
 def dashboard(
     port: int = typer.Option(8765, "--port", help="Port to serve on."),
+    reload: bool = typer.Option(
+        False, "--reload", help="Auto-restart on code changes (for development)."
+    ),
 ) -> None:
-    """Open the local web dashboard (currently: search preferences editor).
-    Localhost only - nothing is exposed to the network."""
+    """Open the local web dashboard: home overview, jobs, applications, inbox
+    suggestions, and preferences. Localhost only - nothing is exposed to the
+    network."""
     profile_path = Path(PROFILE_FILENAME)
     if not profile_path.exists():
-        console.print(f"[red]{PROFILE_FILENAME} not found.[/] Run 'copilot init' first.")
-        raise typer.Exit(1)
+        console.print(
+            f"[yellow]No {PROFILE_FILENAME} yet[/] - the dashboard will open on a setup "
+            "page to guide you."
+        )
 
     import uvicorn
 
-    from copilot.dashboard import create_app
-
     console.print(f"[green]Dashboard:[/] http://127.0.0.1:{port}  (Ctrl+C to stop)")
-    uvicorn.run(create_app(profile_path), host="127.0.0.1", port=port, log_level="warning")
+    if reload:
+        # Reload needs an import string, not an instance; the factory picks up
+        # the default profile.yaml in the working directory.
+        uvicorn.run(
+            "copilot.dashboard:create_app", factory=True, host="127.0.0.1", port=port,
+            reload=True, log_level="warning",
+        )
+    else:
+        from copilot.dashboard import create_app
+
+        uvicorn.run(create_app(profile_path), host="127.0.0.1", port=port, log_level="warning")
 
 
 @jobs_app.command("prune")

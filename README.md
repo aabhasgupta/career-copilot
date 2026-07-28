@@ -6,7 +6,7 @@ A job-search copilot agent that does the legwork while you keep the final say:
 - **Scores fit** with an explainable LLM rubric, including visa/sponsorship feasibility backed by public H1B filing data
 - **Prepares applications**: tailored resume bullets and paste-ready answers per job - you review and click submit yourself, always
 - **Tracks everything** in a local SQLite database: pipeline states, salary, location, and visa status as first-class fields
-- **Monitors your inbox** (Outlook/Hotmail via Microsoft Graph), correlates replies to applications, files them into folders, and alerts you by email
+- **Monitors your inbox** (Outlook/Hotmail via Microsoft Graph), correlates replies to applications, files them into folders, and keeps you posted via desktop notifications and a daily digest email
 - **Preps you for interviews** with briefs built from the JD, company research, and your own gap areas
 
 Design principle: assist, never impersonate. No LinkedIn scraping, no auto-submission, no ToS-violating automation - quality of match and tailoring over volume.
@@ -64,7 +64,11 @@ save and the file's comments preserved. The same dashboard also has a **Jobs**
 tab - a browsable, filterable table of every job (best fit first) with a
 click-through detail view for the full fit breakdown and sponsorship evidence,
 so you don't have to piece it together one `jobs show <id>` at a time, plus
-Queue/Mark-applied buttons on each job's detail page.
+Queue/Mark-applied/Set-state buttons on each job's detail page. A separate
+**Applications** tab is the pipeline view - every job you're tracking, most
+active first (interviewing/offer above applied/queued above rejected), with
+applied and last-activity dates - answering "where does everything stand?"
+while the Jobs tab answers "what should I apply to?".
 
 ## Scoring fit
 
@@ -181,16 +185,18 @@ moving or deleting filed mail never breaks tracking.
   you - even when the reply is a bare "Re: Next steps" with no company name in it, thread
   matching keeps the conversation connected.
 - **An interview invite or online assessment arrives**: same as above, plus an immediate macOS
-  desktop notification and an alert email - these two are time-sensitive, everything else
-  waits for the digest.
+  desktop notification - these two are time-sensitive, everything else waits for the digest.
+  (Requires allowing notifications from "Script Editor" in System Settings once.)
 - **An email about a job you applied to outside Copilot**: nothing is touched. It becomes a
   *suggestion* in `copilot inbox review` (or the dashboard's Suggestions tab): **confirm** to
-  start tracking that application, **decline** to never be asked about that email again, or
-  confirm with `--job <id>` (CLI) / the "job #" field (dashboard) to attach the email to a job
-  already in your list - for when you know where it belongs and the agent couldn't tell.
+  start tracking that application, **decline** to never be asked about that email again, or pick
+  an existing application from the dropdown (`--job <id>` on the CLI) to attach the email there
+  - for when you know where it belongs and the agent couldn't tell.
 - **An email contradicts a state you set yourself** (say you marked a job rejected and an
   interview invite arrives): Copilot never overrules you. It records the email and flags the
-  conflict in the same review queue - you pick which side is right.
+  conflict for you to resolve three ways - adopt the email's state, keep yours (decline), or,
+  if it's actually about a *different* application at the same company, link it there / create a
+  separate application. The flagged one is never silently overwritten.
 - **The filter missed a job email**: drag it into **Career Copilot/Process** and the next sync
   handles it - old mail never triggers an alert, since that clock has already run. (Dropped it
   on the parent folder by mistake? Also fine - that's swept too.) To *check* for misses,

@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% block title %}Integrations &amp; setup - Career Copilot{% endblock %}
+
+{% macro head(r) %}
+  <span class="rdot {{ r.dot }}"></span>
+  <span class="rname">{{ r.label }}{% if not r.required %} <span class="hint">optional</span>{% endif %}</span>
+  {% if r.note %}<span class="rnote">{{ r.note }}</span>{% endif %}
+{% endmacro %}
+
+{% macro editor(r) %}
+  {% if r.key == 'resume' %}
+    <form class="editor-form" method="post" action="/config/resume" enctype="multipart/form-data">
+      <label>Replace resume file <span class="hint">saved to {{ r.note }}</span>
+        <input type="file" name="file" accept=".pdf,.docx,.doc,.txt" required>
+      </label>
+      <button class="mini" type="submit">Upload</button>
+    </form>
+  {% elif r.key == 'anthropic' %}
+    <form class="editor-form" method="post" action="/config/env">
+      <label>Anthropic API key
+        <input type="password" name="ANTHROPIC_API_KEY" placeholder="sk-ant-..." autocomplete="off" required>
+      </label>
+      <button class="mini" type="submit">Save</button>
+    </form>
+  {% elif r.key == 'discovery' %}
+    <form class="editor-form" method="post" action="/config/env">
+      <p class="hint">Set either provider. Adzuna needs both an App ID and Key.</p>
+      <label>Adzuna App ID<input type="text" name="ADZUNA_APP_ID" autocomplete="off"></label>
+      <label>Adzuna App Key<input type="password" name="ADZUNA_APP_KEY" autocomplete="off"></label>
+      <label>JSearch API key<input type="password" name="JSEARCH_API_KEY" autocomplete="off"></label>
+      <button class="mini" type="submit">Save</button>
+    </form>
+  {% elif r.key == 'email' %}
+    <form class="editor-form" method="post" action="/config/env">
+      <label>Azure client ID
+        <input type="text" name="AZURE_CLIENT_ID" autocomplete="off" required>
+      </label>
+      <button class="mini" type="submit">Save</button>
+      <p class="hint">Then run <span class="cmd">copilot email login</span> once in the terminal to
+      finish the device-code sign-in.</p>
+    </form>
+  {% endif %}
+{% endmacro %}
+
+{% macro row(r, schedule) %}
+  {% if r.key == 'profile' %}
+    <div class="irow{{ ' needs' if r.dot == 'warn' }}" title="{{ r.purpose }}">
+      {{ head(r) }}
+      <span class="ract"><a class="rlink" href="/preferences">{{ 'Edit' if r.ok else 'Set up' }} &rarr;</a></span>
+    </div>
+  {% elif r.key == 'schedule' %}
+    <div class="irow{{ ' needs' if r.dot == 'warn' }}" title="{{ r.purpose }}">
+      {{ head(r) }}
+      <span class="ract">
+        {% if schedule.loaded %}
+          <form class="inline" method="post" action="/schedule/pause"><button class="mini secondary" type="submit">Pause</button></form>
+        {% elif schedule.installed %}
+          <form class="inline" method="post" action="/schedule/resume"><button class="mini" type="submit">Resume</button></form>
+        {% else %}
+          <form class="inline" method="post" action="/schedule/install"><button class="mini" type="submit">Install</button></form>
+        {% endif %}
+      </span>
+    </div>
+  {% else %}
+    <details class="irow-edit{{ ' needs' if r.dot == 'warn' }}">
+      <summary class="irow" title="{{ r.purpose }}">
+        {{ head(r) }}
+        <span class="ract"><span class="rlink">{{ 'Update' if r.ok else 'Add' }} &rsaquo;</span></span>
+      </summary>
+      <div class="editor">{{ editor(r) }}</div>
+    </details>
+  {% endif %}
+{% endmacro %}
+
+{% block content %}
+<div class="page-head">
+  <h1>Integrations &amp; setup</h1>
+  <p>Your control panel - connect services, update keys, and pause or resume the background sync.
+  Hover a row to see what it powers.</p>
+</div>
+
+{{ flash|safe }}
+
+{% if required_complete %}
+  <div class="health ok"><span class="ic">&#x2713;</span>
+    {% if configured == total %}All systems ready{% else %}Ready to run{% endif %}
+    <span class="count">&middot; {{ configured }} of {{ total }} configured</span></div>
+{% else %}
+  <div class="health todo"><span class="ic">&#x25B2;</span>
+    {{ missing_required }} required item{{ 's' if missing_required != 1 }} need{{ 's' if missing_required == 1 }} you
+    <span class="count">&middot; {{ configured }} of {{ total }} configured</span></div>
+{% endif %}
+
+<div class="integ-section">
+  <h2>Core</h2>
+  {% for r in core %}{{ row(r, schedule) }}{% endfor %}
+</div>
+
+<div class="integ-section">
+  <h2>Optional</h2>
+  {% for r in optional %}{{ row(r, schedule) }}{% endfor %}
+</div>
+
+<p class="footnote">Keys are written to <span class="cmd">.env</span> and applied right away - no restart.
+Localhost only, single user.</p>
+{% endblock %}

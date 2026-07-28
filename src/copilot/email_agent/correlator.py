@@ -75,10 +75,42 @@ def find_candidates(session: Session, message: InboundMessage) -> list[Candidate
     return candidates
 
 
+# Shared mailbox providers: a sender @gmail.com identifies a person, never a
+# company - learning one of these as a company's domain would make every
+# email from that provider a correlation candidate for that company. (Found
+# live 2026-07-26: a test email from the user's own Gmail taught Copilot
+# that a company's domain was gmail.com.)
+_FREEMAIL_DOMAINS = frozenset(
+    {
+        "gmail.com",
+        "googlemail.com",
+        "outlook.com",
+        "hotmail.com",
+        "live.com",
+        "msn.com",
+        "yahoo.com",
+        "ymail.com",
+        "icloud.com",
+        "me.com",
+        "aol.com",
+        "proton.me",
+        "protonmail.com",
+        "gmx.com",
+        "mail.com",
+    }
+)
+
+
 def learn_domain(company: Company, sender: str, ats_domains: frozenset[str]) -> None:
     """Record a company's real email domain from confirmed evidence, unless
-    the mail came via a shared ATS domain (greenhouse.io says nothing about
-    which company). Never overwrites an already-learned domain."""
+    the mail came via a shared domain that identifies no company - an ATS
+    (greenhouse.io) or a freemail provider (gmail.com). Never overwrites an
+    already-learned domain."""
     domain = sender.rsplit("@", 1)[-1] if "@" in sender else ""
-    if domain and company.domain is None and domain not in ats_domains:
+    if (
+        domain
+        and company.domain is None
+        and domain not in ats_domains
+        and domain not in _FREEMAIL_DOMAINS
+    ):
         company.domain = domain
