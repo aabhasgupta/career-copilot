@@ -61,6 +61,19 @@
         {% endif %}
       </span>
     </div>
+  {% elif r.key == 'email' %}
+    <div class="irow{{ ' needs' if r.dot == 'warn' }}" title="{{ r.purpose }}">
+      {{ head(r) }}
+      <span class="ract">
+        {% if r.ok %}
+          <form class="inline" method="post" action="/integrations/sync-email"><button class="mini secondary" type="submit">Sync now</button></form>
+        {% endif %}
+        <details class="irow-inline-edit">
+          <summary class="rlink">{{ 'Update' if r.ok else 'Add' }} &rsaquo;</summary>
+          <div class="editor inline-dropdown">{{ editor(r) }}</div>
+        </details>
+      </span>
+    </div>
   {% else %}
     <details class="irow-edit{{ ' needs' if r.dot == 'warn' }}">
       <summary class="irow" title="{{ r.purpose }}">

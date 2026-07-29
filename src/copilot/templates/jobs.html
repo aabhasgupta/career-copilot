@@ -5,38 +5,106 @@
   <h1>Jobs</h1>
   <p>{{ jobs|length }} of {{ total }} shown &middot; {{ scored }} scored for fit. Most
   recent and best fit first. Unscored jobs are never treated as low fit - they just
-  haven't run through <code>copilot score</code> yet. Click a title for the full breakdown.</p>
+  haven't been scored yet. Click a title for the full breakdown.</p>
 </div>
 
+{{ flash|safe }}
+
+<article class="jobs-actions">
+  <form method="post" action="/jobs/search" class="inline">
+    <button type="submit" class="mini ghost"
+      title="Searches every configured source (Adzuna/JSearch/ATS boards) for every title x location in your Preferences - a real API call, can take a while.{{ ' JSearch: ' + jsearch_note if jsearch_on }}">
+      Search for new jobs
+    </button>
+  </form>
+  <span class="action-note">last searched {{ last_searched_display }}{{ ' · ' + jsearch_note if jsearch_on }}</span>
+
+  <form method="post" action="/jobs/score-batch" class="inline score-form">
+    <select name="count" aria-label="Number of jobs to score">
+      {% for n in [10, 20, 30, 40, 50, 60, 70, 80, 90, 100] %}
+      <option value="{{ n }}"{{ ' selected' if n == 20 }}>{{ n }}</option>
+      {% endfor %}
+    </select>
+    <button type="submit" class="mini ghost"
+      title="Uses a real Claude API call (about 1 call per 8 jobs) to score the oldest unscored jobs first.">
+      Score
+    </button>
+  </form>
+  <span class="action-note">{{ unscored_total }} job{{ 's' if unscored_total != 1 }} total need scoring</span>
+</article>
+
 <form method="get" action="/jobs" class="filterbar">
-  <input type="number" name="min_fit" placeholder="Min fit" value="{{ min_fit }}">
-  <input type="text" name="location" placeholder="Location contains..." value="{{ location }}">
-  <input type="number" name="max_age" placeholder="Max age (days)" value="{{ max_age }}">
-  <select name="sort" aria-label="Sort by">
-    <option value="fit"{{ ' selected' if sort == 'fit' }}>Best fit</option>
-    <option value="new"{{ ' selected' if sort == 'new' }}>Newest</option>
-    <option value="salary"{{ ' selected' if sort == 'salary' }}>Highest salary</option>
-  </select>
-  <label class="inline-check"><input type="checkbox" name="hide_tracked" value="true"
-    {{ 'checked' if hide_tracked }}> Hide tracked</label>
-  <button type="submit">Apply</button>
-  {% if min_fit or location or sort != 'fit' or hide_tracked %}<a class="clear" href="/jobs">Reset</a>{% endif %}
+  <div class="filterbar-primary">
+    <input type="number" name="min_fit" placeholder="Min fit" value="{{ min_fit }}">
+    <select name="sort" aria-label="Sort by">
+      <option value="fit"{{ ' selected' if sort == 'fit' }}>Best fit</option>
+      <option value="new"{{ ' selected' if sort == 'new' }}>Newest</option>
+      <option value="salary"{{ ' selected' if sort == 'salary' }}>Highest salary</option>
+    </select>
+    <select name="visa" aria-label="Visa/sponsorship">
+      <option value=""{{ ' selected' if visa == '' }}>Visa: any</option>
+      <option value="sponsor"{{ ' selected' if visa == 'sponsor' }}>Likely sponsors</option>
+      <option value="hide_no"{{ ' selected' if visa == 'hide_no' }}>Hide explicit no-sponsor</option>
+    </select>
+    <label class="inline-check"><input type="checkbox" name="remote_only" value="true"
+      {{ 'checked' if remote_only }}> Remote only</label>
+    <label class="inline-check"><input type="checkbox" name="hide_tracked" value="true"
+      {{ 'checked' if hide_tracked }}> Hide tracked</label>
+  </div>
+
+  <details class="more-filters"{{ ' open' if more_filters_active }}>
+    <summary>More filters</summary>
+    <div class="more-filters-grid">
+      <input type="text" name="title" placeholder="Title contains..." value="{{ title_q }}">
+      <input type="text" name="company" placeholder="Company contains..." value="{{ company }}">
+      <input type="text" name="location" placeholder="Location contains..." value="{{ location }}">
+      <select name="industry" aria-label="Industry">
+        <option value="">Industry: any</option>
+        {% for i in industry_options %}<option value="{{ i }}"{{ ' selected' if industry == i }}>{{ i }}</option>{% endfor %}
+      </select>
+      <div class="prefixed-input">
+        <span class="prefix">$</span>
+        <input type="number" name="salary_floor" placeholder="Salary floor" value="{{ salary_floor }}">
+      </div>
+      <select name="employment_type" aria-label="Employment type">
+        <option value="">Type: any</option>
+        {% for key, opt in employment_type_options.items() %}
+        <option value="{{ key }}"{{ ' selected' if employment_type == key }}>{{ opt[0] }}</option>
+        {% endfor %}
+      </select>
+      <input type="number" name="max_age" placeholder="Max age (days)" value="{{ max_age }}">
+    </div>
+  </details>
+
+  <div class="filterbar-actions">
+    <button type="submit">Apply</button>
+    {% if filters_active %}<a class="clear" href="/jobs">Reset</a>{% endif %}
+  </div>
 </form>
 
 <article>
   <div class="tablewrap">
     <table class="jobs">
       <thead><tr>
-        <th>Fit</th><th>Title</th><th>Company</th><th>Location</th>
-        <th>Salary</th><th>Posted</th><th>Visa</th><th></th>
+        <th>Fit</th><th>Role</th><th>Salary</th><th>Posted</th><th>Visa</th><th></th>
       </tr></thead>
       <tbody>
         {% for job in jobs %}
         <tr>
-          <td>{{ fit_badge(job.fit_score) }}</td>
-          <td><a href="/jobs/{{ job.id }}">{{ job.title }}</a></td>
-          <td>{{ job.company.name if job.company else "?" }}</td>
-          <td>{{ job.location or "unknown" }}</td>
+          <td>
+            {% if job.fit_score is none %}
+            <form method="post" action="/jobs/{{ job.id }}/score" class="inline">
+              <button type="submit" class="mini ghost score-one"
+                title="Scores just this job now - a real Claude API call, takes a few seconds.">Score</button>
+            </form>
+            {% else %}
+            {{ fit_badge(job.fit_score) }}
+            {% endif %}
+          </td>
+          <td class="role-cell">
+            <a class="role-title" href="/jobs/{{ job.id }}" title="{{ job.title }}">{{ job.title }}</a>
+            <div class="role-sub">{{ job.company.name if job.company else "?" }} &middot; {{ job.location or "unknown" }}</div>
+          </td>
           <td>{{ format_salary(job) }}</td>
           <td>{{ format_posted(job) }}</td>
           <td>{{ visa_cell(job) }}</td>
@@ -46,11 +114,30 @@
           </td>
         </tr>
         {% else %}
-        <tr><td colspan="8" class="sub">No jobs match these filters.</td></tr>
+        <tr><td colspan="6" class="sub">No jobs match these filters.</td></tr>
         {% endfor %}
       </tbody>
     </table>
   </div>
   {% if show_more_url %}<a class="showmore" href="{{ show_more_url }}">Show 50 more &darr;</a>{% endif %}
 </article>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  // Search/score are real, slow (can be minutes) API calls with no
+  // client-side feedback while the full-page POST is in flight - found live
+  // that a client-side timeout on a slow request does NOT stop it
+  // server-side, so an impatient second click genuinely doubles the work
+  // (and, for Search, the JSearch quota spent). Disabling on submit is a
+  // cheap guard against that, not a UX nicety.
+  document.querySelectorAll('.jobs-actions form, .score-one').forEach(function (el) {
+    var form = el.tagName === "FORM" ? el : el.closest("form");
+    if (!form) return;
+    form.addEventListener("submit", function () {
+      var btn = form.querySelector("button[type=submit]");
+      if (btn && !btn.disabled) { btn.disabled = true; btn.textContent += "…"; }
+    });
+  });
+</script>
 {% endblock %}

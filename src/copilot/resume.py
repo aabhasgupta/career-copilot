@@ -15,9 +15,9 @@ import hashlib
 import json
 from pathlib import Path
 
-from anthropic import Anthropic
 from pydantic import BaseModel, Field
 
+from copilot import llm
 from copilot.config import RESUME_CACHE_PATH, Profile
 
 
@@ -117,8 +117,7 @@ def extract_resume_profile(
         if cached.get("cache_key") == key:
             return ResumeProfile.model_validate(cached["profile"])
 
-    client = Anthropic()
-    response = client.messages.parse(
+    response = llm.parse(
         model=profile.llm.model,
         max_tokens=16000,
         messages=[

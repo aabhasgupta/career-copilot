@@ -13,9 +13,9 @@ from __future__ import annotations
 import json
 import re
 
-from anthropic import Anthropic
 from pydantic import BaseModel
 
+from copilot import llm
 from copilot.config import Profile
 from copilot.resume import ResumeProfile
 
@@ -70,7 +70,6 @@ def _extract_json_block(text: str) -> list[dict]:
 
 def suggest_target_titles(profile: Profile, resume: ResumeProfile) -> list[TitleSuggestion]:
     """Ask Claude to research and propose target titles. Runs live web searches."""
-    client = Anthropic()
     prompt = SUGGEST_PROMPT_TEMPLATE.format(
         seniority=resume.seniority,
         years=resume.years_of_experience,
@@ -83,7 +82,7 @@ def suggest_target_titles(profile: Profile, resume: ResumeProfile) -> list[Title
     tools = [{"type": "web_search_20260209", "name": "web_search", "max_uses": 6}]
     messages: list[dict] = [{"role": "user", "content": prompt}]
 
-    response = client.messages.create(
+    response = llm.create(
         model=profile.llm.model, max_tokens=4096, tools=tools, messages=messages
     )
     # Web search is server-executed; a pause_turn just means Claude's internal
@@ -92,7 +91,7 @@ def suggest_target_titles(profile: Profile, resume: ResumeProfile) -> list[Title
     resumes = 0
     while response.stop_reason == "pause_turn" and resumes < MAX_PAUSE_RESUMES:
         messages.append({"role": "assistant", "content": response.content})
-        response = client.messages.create(
+        response = llm.create(
             model=profile.llm.model, max_tokens=4096, tools=tools, messages=messages
         )
         resumes += 1

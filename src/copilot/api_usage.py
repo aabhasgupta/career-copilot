@@ -27,6 +27,17 @@ class Quota:
     captured_at: datetime
 
 
+@dataclass
+class AnthropicSpend:
+    month: str  # "YYYY-MM"
+    calls: int
+    input_tokens: int
+    output_tokens: int
+    cache_creation_tokens: int
+    cache_read_tokens: int
+    cost_usd: float | None  # None if any recorded call used a model with no known price
+
+
 def _load(path: Path) -> dict:
     if not path.exists():
         return {}
@@ -81,4 +92,64 @@ def get_jsearch_quota(path: Path | None = None) -> Quota | None:
         remaining=data.get("remaining"),
         reset_at=datetime.fromisoformat(data["reset_at"]) if data.get("reset_at") else None,
         captured_at=datetime.fromisoformat(data["captured_at"]),
+    )
+
+
+def record_anthropic_usage(
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    cache_creation_tokens: int,
+    cache_read_tokens: int,
+    cost_usd: float | None,
+    path: Path | None = None,
+) -> None:
+    """Accumulate one real Claude call's usage into the current calendar
+    month's running total (docs/DECISIONS.md D34). This is a self-tracked
+    estimate of what this tool's own calls cost - not the account's real
+    balance, which no API exposes for a standard (non-Admin) key."""
+    path = path if path is not None else USAGE_PATH
+    month = datetime.now(timezone.utc).strftime("%Y-%m")
+    data = _load(path)
+    months = data.setdefault("anthropic", {})
+    bucket = months.setdefault(
+        month,
+        {
+            "calls": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_creation_tokens": 0,
+            "cache_read_tokens": 0,
+            "cost_usd": 0.0,
+            "cost_unknown": False,
+        },
+    )
+    bucket["calls"] += 1
+    bucket["input_tokens"] += input_tokens
+    bucket["output_tokens"] += output_tokens
+    bucket["cache_creation_tokens"] += cache_creation_tokens
+    bucket["cache_read_tokens"] += cache_read_tokens
+    if cost_usd is None:
+        bucket["cost_unknown"] = True  # at least one call used an unpriced model
+    else:
+        bucket["cost_usd"] += cost_usd
+    _save(path, data)
+
+
+def get_anthropic_spend(month: str | None = None, path: Path | None = None) -> AnthropicSpend | None:
+    """Current (or given) calendar month's tracked spend, or None if no
+    calls have been recorded yet this month."""
+    path = path if path is not None else USAGE_PATH
+    month = month or datetime.now(timezone.utc).strftime("%Y-%m")
+    bucket = _load(path).get("anthropic", {}).get(month)
+    if not bucket:
+        return None
+    return AnthropicSpend(
+        month=month,
+        calls=bucket["calls"],
+        input_tokens=bucket["input_tokens"],
+        output_tokens=bucket["output_tokens"],
+        cache_creation_tokens=bucket["cache_creation_tokens"],
+        cache_read_tokens=bucket["cache_read_tokens"],
+        cost_usd=None if bucket.get("cost_unknown") else bucket["cost_usd"],
     )

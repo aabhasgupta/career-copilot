@@ -10,9 +10,9 @@ can't invent a state the ladder doesn't have.
 
 from __future__ import annotations
 
-from anthropic import Anthropic
 from pydantic import BaseModel, Field
 
+from copilot import llm
 from copilot.db.models import ApplicationState, EmailEventType
 from copilot.email_agent.correlator import Candidate
 from copilot.email_agent.provider import InboundMessage
@@ -90,8 +90,7 @@ def _candidates_block(candidates: list[Candidate]) -> str:
 def classify_email(
     message: InboundMessage, candidates: list[Candidate], model: str
 ) -> EmailClassification:
-    client = Anthropic()
-    response = client.messages.parse(
+    response = llm.parse(
         model=model,
         max_tokens=1000,
         messages=[

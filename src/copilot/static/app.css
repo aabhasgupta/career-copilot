@@ -98,7 +98,18 @@ article > h2:first-child, article > h3:first-child { margin-top: 0; }
 table.jobs { font-size: .88rem; margin: 0; }
 table.jobs th { font-size: .72rem; text-transform: uppercase; letter-spacing: .04em;
   white-space: nowrap; color: var(--pico-muted-color); }
-table.jobs td { vertical-align: top; }
+table.jobs td { vertical-align: top; padding-top: .7rem; padding-bottom: .7rem; }
+table.jobs th:nth-child(3), table.jobs th:nth-child(4), table.jobs td:nth-child(3),
+table.jobs td:nth-child(4) { white-space: nowrap; }
+
+/* Title + company + location collapsed into one block so the table stays to
+   ~5 effective columns and fits without horizontal scroll at normal widths -
+   previously each was its own column and Visa/Apply ran off the right edge. */
+.role-cell { max-width: 290px; }
+.role-title { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; font-weight: 600; line-height: 1.35; }
+.role-sub { color: var(--pico-muted-color); font-size: .82rem; margin-top: .2rem;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* ---- Badges: fit score ---- */
 .fit { font-weight: 700; padding: .15rem .55rem; border-radius: 999px; font-size: .82rem; }
@@ -120,19 +131,151 @@ table.jobs td { vertical-align: top; }
 .state.terminal { background: #f4ecec; color: #8a2323; }
 .state.won { background: #e7f4ec; color: #1d5e33; }
 
-/* ---- Filter bar ---- */
-.filterbar { display: flex; gap: .6rem; margin-bottom: 1.1rem; flex-wrap: wrap; align-items: center; }
+/* ---- Jobs page: Search / Score actions, above the filter bar. Real,
+   costed actions (an API call, either a JSearch quota hit or Claude tokens)
+   so each gets a hover tooltip saying so, plus a plain-text note with
+   context (quota left, how many jobs still need scoring) rather than
+   making the user guess before clicking. ---- */
+.jobs-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .7rem 1.3rem;
+  margin-bottom: 1.1rem; }
+.action-note { color: var(--pico-muted-color); font-size: .84rem; }
+.score-form { display: flex; align-items: center; gap: .5rem; }
+.score-form select { width: auto; margin: 0; padding: .35rem .6rem; height: auto; font-size: .9rem; }
+
+/* ---- Filter bar: a primary always-visible row, plus a "More filters"
+   disclosure for the ones worth having but not worth seeing on every visit
+   (D-something, 2026-07-28 - built from real DB field-coverage checks, not
+   guessed). .filterbar itself is a plain block so its three sections (row,
+   details, actions) stack instead of trying to sit side by side. ---- */
+.filterbar { margin-bottom: 1.1rem; }
 .filterbar input, .filterbar select { width: auto; margin: 0; }
-.filterbar input[name=location] { flex: 1 1 180px; }
 .filterbar .clear { color: var(--pico-muted-color); font-size: .85rem; }
 .filterbar .inline-check { display: flex; align-items: center; gap: .4rem; margin: 0;
   font-size: .88rem; white-space: nowrap; }
 .filterbar .inline-check input { width: auto; margin: 0; }
+/* Pico's button[type=submit]{width:100%} otherwise stretches this to fill the
+   row - inside a flex-wrap bar that means its own full-width row (the "giant
+   blue bar" bug). .filterbar button[type=submit] outspecifies that rule. */
+.filterbar button[type=submit] { width: auto; margin: 0; padding: .45rem 1.1rem; }
+
+.filterbar-primary { display: flex; gap: .6rem; flex-wrap: wrap; align-items: center; }
+
+.more-filters { margin-top: .8rem; }
+.more-filters summary { font-size: .86rem; color: var(--pico-muted-color); font-weight: 600; }
+.more-filters-grid { display: flex; flex-wrap: wrap; gap: .6rem; margin-top: .8rem; }
+.more-filters-grid input[name=title], .more-filters-grid input[name=company],
+.more-filters-grid input[name=location] { flex: 1 1 160px; }
+
+.filterbar-actions { display: flex; align-items: center; gap: .8rem; margin-top: .9rem; }
+
+.score-one { padding: .15rem .6rem; font-size: .78rem; }
 
 /* ---- Meta chips (job detail) ---- */
 .chips { display: flex; flex-wrap: wrap; gap: .4rem; margin: .1rem 0 .8rem; }
 .chip { font-size: .78rem; font-weight: 600; padding: .2rem .6rem; border-radius: 999px;
   background: #eef0fb; color: var(--cc-accent); text-transform: capitalize; }
+
+/* ---- Chiplist: editable tag/preference-list fields (Preferences page) ----
+   .chiplist wraps a <textarea.chiplist-source> - the real form field, kept in
+   sync by chiplist.js on every add/remove/reorder so the backend parses
+   exactly the same one-per-line value it always has. No JS -> the plain
+   textarea (JS only hides it via the native [hidden] attribute) still works. */
+.chiplist { display: flex; flex-direction: column; gap: .5rem; }
+.chiplist-source { resize: vertical; }
+
+.chip-row { display: flex; flex-wrap: wrap; gap: .4rem; }
+.pref-chip { display: inline-flex; align-items: center; gap: .35rem; font-size: .86rem;
+  font-weight: 550; padding: .3rem .4rem .3rem .7rem; border-radius: 999px;
+  background: #eef0fb; color: var(--cc-accent); }
+.chip-text { line-height: 1.1; }
+.chip-remove { appearance: none; border: none; background: transparent; cursor: pointer;
+  color: inherit; opacity: .55; font-size: 1rem; line-height: 1; padding: .1rem .2rem;
+  margin: 0; width: auto; border-radius: 999px; }
+.chip-remove:hover { opacity: 1; background: rgba(0,0,0,.06); }
+
+/* .chiplist is a column flex container (list above, input below), so a
+   flex-basis on the input would be read as a height, not a width - size it
+   explicitly instead. Compact for the tag row; full-width after a ranked
+   list, to match the rank rows' width. Doubled-up class beats the
+   specificity of Pico's own input:not([type=checkbox],[type=radio]){width:
+   100%}, which otherwise wins over a single-class selector regardless of
+   source order. The input is always wrapped in .chiplist-input-wrap (even
+   when there's no suggestion dropdown) so this sizing and the dropdown's
+   positioning share one anchor. */
+.chiplist .chiplist-input-wrap { position: relative; align-self: flex-start; width: 220px; }
+.chiplist .chip-ranked + .chiplist-input-wrap { align-self: stretch; width: auto; }
+.chiplist-input-wrap .chiplist-input { display: block; width: 100%; margin: 0;
+  font-size: .9rem; padding: .45rem .7rem; height: auto; }
+
+.chip-suggest { position: absolute; top: calc(100% + .3rem); left: 0; right: 0; z-index: 20;
+  background: var(--pico-card-background-color); border: 1px solid var(--pico-card-border-color);
+  border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,.12); max-height: 220px;
+  overflow-y: auto; padding: .3rem; display: flex; flex-direction: column; gap: .1rem; }
+/* color: inherit, not var(--pico-color) - Pico's own `button` rule locally
+   redefines --pico-color to its button-inverse (near-white) shade on every
+   button element, so reading that variable back here would render invisible
+   white-on-white text. inherit instead picks up the ambient body text color
+   from .chip-suggest (a plain div, unshadowed) - same fix as .chip-remove. */
+.chip-suggest-opt { appearance: none; border: none; background: transparent; text-align: left;
+  cursor: pointer; padding: .4rem .55rem; border-radius: 6px; font-size: .86rem;
+  color: inherit; margin: 0; width: 100%; }
+.chip-suggest-opt:hover, .chip-suggest-opt.active { background: #eef0fb; color: var(--cc-accent); }
+
+/* Ranked lists: a vertical numbered stack, drag-reorderable, with ▲▼ as a
+   keyboard/no-drag-required alternative - order is the field's actual
+   meaning ("most preferred first"), so it gets its own visual treatment
+   instead of hiding in textarea line position. */
+.chip-ranked { display: flex; flex-direction: column; gap: .4rem; margin: 0; padding: 0;
+  list-style: none; }
+.chip-rank-item { display: flex; align-items: center; gap: .55rem; padding: .5rem .6rem;
+  border: 1px solid var(--pico-card-border-color); border-radius: 10px;
+  background: var(--pico-card-background-color); font-size: .9rem; }
+.chip-rank-item.dragging { opacity: .4; }
+.chip-drag { cursor: grab; color: var(--pico-muted-color); font-size: .8rem;
+  letter-spacing: -2px; }
+.chip-num { flex: 0 0 auto; width: 1.4rem; height: 1.4rem; display: inline-flex;
+  align-items: center; justify-content: center; border-radius: 999px;
+  background: #eef0fb; color: var(--cc-accent); font-size: .74rem; font-weight: 700; }
+.chip-rank-item .chip-text { flex: 1 1 auto; }
+.chip-move { appearance: none; border: none; background: transparent; cursor: pointer;
+  color: var(--pico-muted-color); font-size: .7rem; padding: .1rem .3rem; margin: 0;
+  width: auto; border-radius: 6px; line-height: 1; }
+.chip-move:hover:not(:disabled) { background: rgba(0,0,0,.06); color: var(--cc-accent); }
+.chip-move:disabled { opacity: .25; cursor: default; }
+.chip-rank-item .chip-remove { margin-left: .2rem; }
+
+/* Preferences form: field spacing, hints below (not crammed into) the
+   label, a $ prefix for the salary input, and a standalone switch row. */
+article label.field-label { margin-top: 1.1rem; }
+.field-hint { color: var(--pico-muted-color); font-size: .84rem; margin: -.3rem 0 .5rem; }
+
+/* A label paired with "Suggest from resume" / "Clear all" actions. Buttons
+   sit right after the label, grouped as one visual unit - not pushed to the
+   far right of the row, where they'd float disconnected from the label they
+   act on and read as loose text near whatever's below them instead of as
+   controls that belong to this field. The row carries the spacing a bare
+   label.field-label would otherwise carry itself, so the label and its
+   buttons move as one unit instead of stacking two margins. */
+article .field-row { display: flex; align-items: center; gap: 1rem; margin-top: 1.4rem;
+  margin-bottom: .6rem; }
+article .field-row label.field-label,
+article .field-row > label:first-child { margin-top: 0; }
+.field-actions { display: flex; align-items: center; gap: .6rem; flex: 0 0 auto; }
+
+/* Lighter than the solid .secondary treatment (Sync now / Pause elsewhere) -
+   these are optional, supplementary actions next to a field, not a state
+   change, so a heavier filled button read as out of place here. */
+button.mini.ghost { background: transparent; border: 1px solid var(--pico-card-border-color);
+  color: var(--cc-accent); padding: .35rem 1rem; }
+button.mini.ghost:hover { background: #eef0fb; border-color: var(--cc-accent); }
+
+.prefixed-input { position: relative; max-width: 220px; }
+.prefixed-input .prefix { position: absolute; left: .75rem; top: 50%; transform: translateY(-50%);
+  color: var(--pico-muted-color); font-weight: 600; pointer-events: none; }
+.prefixed-input input { padding-left: 1.6rem; }
+
+.pref-switch { margin-top: 1.2rem; padding-top: 1rem; border-top: 1px solid var(--pico-card-border-color); }
+.pref-switch label { display: flex; align-items: center; gap: .6rem; font-weight: 550; }
 
 /* ---- Job description ---- */
 details > summary { cursor: pointer; font-weight: 650; }
@@ -224,7 +367,7 @@ form.inline { margin: 0; display: inline; }
 .rnote { margin-left: auto; color: var(--pico-muted-color); font-size: .84rem;
   text-align: right; white-space: nowrap; }
 .irow.needs .rnote { color: #8a6100; }
-.ract { flex: 0 0 auto; display: flex; align-items: center; }
+.ract { flex: 0 0 auto; display: flex; align-items: center; gap: .7rem; }
 .ract:empty { display: none; }
 .rname + .ract { margin-left: auto; }  /* keep action right-aligned when there's no note */
 .rlink { font-size: .85rem; white-space: nowrap; text-decoration: none; color: var(--cc-accent); font-weight: 600; }
@@ -246,6 +389,24 @@ details.irow-edit > summary:hover .rlink { text-decoration: underline; }
 details.irow-edit[open] { background: var(--pico-code-background-color); border-radius: 8px; }
 details.irow-edit[open] > summary .rlink { color: var(--pico-muted-color); }
 details.irow-edit.needs { background: #fffaf0; border-radius: 8px; border-bottom-color: transparent; }
+
+/* Inline variant: same editor content, but anchored to a small "Update ›"
+   trigger inside .ract (email row - sits next to the always-visible "Sync
+   now" button, so the row can't also be one big clickable <summary> the way
+   the other config rows are). Opens as a small anchored dropdown instead of
+   expanding the full row. */
+.irow-inline-edit { position: relative; }
+.irow-inline-edit summary { list-style: none; cursor: pointer; }
+.irow-inline-edit summary::-webkit-details-marker { display: none; }
+.irow-inline-edit summary::marker { content: ""; }
+/* Same Pico accordion-chevron leak as details.irow-edit above - the "Update ›"
+   text is already the affordance, drop Pico's own ::after chevron. */
+.irow-inline-edit summary::after { display: none !important; }
+.irow-inline-edit[open] summary { color: var(--pico-muted-color); }
+.editor.inline-dropdown { position: absolute; top: calc(100% + .5rem); right: 0; z-index: 20;
+  width: 320px; text-align: left; padding: 1rem; background: var(--pico-card-background-color);
+  border: 1px solid var(--pico-card-border-color); border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0,0,0,.12); }
 
 .editor { padding: .2rem 1rem 1rem 1.4rem; }
 .editor-form { margin: 0; max-width: 440px; }

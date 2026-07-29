@@ -3,7 +3,12 @@ from pathlib import Path
 
 import httpx
 
-from copilot.api_usage import get_jsearch_quota, record_jsearch_quota
+from copilot.api_usage import (
+    get_anthropic_spend,
+    get_jsearch_quota,
+    record_anthropic_usage,
+    record_jsearch_quota,
+)
 
 
 def test_record_and_get_roundtrip(tmp_path: Path):
@@ -61,3 +66,35 @@ def test_record_updates_existing_file_in_place(tmp_path: Path):
     record_jsearch_quota(httpx.Headers({"x-ratelimit-requests-limit": "200",
                                          "x-ratelimit-requests-remaining": "149"}), path=path)
     assert get_jsearch_quota(path=path).remaining == 149
+
+
+def test_anthropic_spend_accumulates_across_calls(tmp_path: Path):
+    path = tmp_path / "usage.json"
+    record_anthropic_usage("claude-sonnet-5", 1000, 200, 0, 0, cost_usd=0.004, path=path)
+    record_anthropic_usage("claude-sonnet-5", 500, 100, 0, 0, cost_usd=0.002, path=path)
+
+    spend = get_anthropic_spend(path=path)
+    assert spend is not None
+    assert spend.calls == 2
+    assert spend.input_tokens == 1500
+    assert spend.output_tokens == 300
+    assert spend.cost_usd == 0.006
+
+
+def test_anthropic_spend_missing_month_returns_none(tmp_path: Path):
+    path = tmp_path / "usage.json"
+    record_anthropic_usage("claude-sonnet-5", 100, 10, 0, 0, cost_usd=0.001, path=path)
+    assert get_anthropic_spend(month="2020-01", path=path) is None
+
+
+def test_anthropic_spend_cost_unknown_when_any_call_is_unpriced(tmp_path: Path):
+    """One call on an unpriced model makes the whole month's cost 'unknown'
+    rather than silently under-reporting it."""
+    path = tmp_path / "usage.json"
+    record_anthropic_usage("claude-sonnet-5", 1000, 200, 0, 0, cost_usd=0.004, path=path)
+    record_anthropic_usage("some-future-model", 1000, 200, 0, 0, cost_usd=None, path=path)
+
+    spend = get_anthropic_spend(path=path)
+    assert spend.calls == 2
+    assert spend.cost_usd is None
+    assert spend.input_tokens == 2000  # token totals still tracked even when cost isn't

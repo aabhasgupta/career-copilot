@@ -1,8 +1,19 @@
+import re
 from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
 from copilot.dashboard import create_app
+
+
+def _first_job_id(html_text: str) -> str:
+    """The first real job detail link (/jobs/<numeric id>) on a rendered
+    Jobs-list page. Anchored to a digit so it can't match a non-detail
+    /jobs/... route (e.g. the Search button's action="/jobs/search")."""
+    match = re.search(r'/jobs/(\d+)"', html_text)
+    assert match, "no job detail link found in the page"
+    return match.group(1)
 
 PROFILE = """\
 identity:
@@ -148,8 +159,7 @@ def test_home_surfaces_active_application_and_pipeline(tmp_path: Path, monkeypat
         "copilot.setup_status.get_setup_status", lambda *a, **k: _complete_status()
     )
     list_resp = client.get("/jobs")
-    start = list_resp.text.index("/jobs/") + len("/jobs/")
-    job_id = list_resp.text[start : list_resp.text.index('"', start)]
+    job_id = _first_job_id(list_resp.text)
     client.post(f"/jobs/{job_id}/set-state", data={"state": "interviewing"}, follow_redirects=False)
 
     home = client.get("/").text
@@ -204,8 +214,7 @@ def test_jobs_list_shows_scored_first_and_visa_signals(tmp_path: Path):
 def test_jobs_hide_tracked_filters_out_applications(tmp_path: Path):
     client = _client_with_db(tmp_path)
     list_resp = client.get("/jobs")
-    start = list_resp.text.index("/jobs/") + len("/jobs/")
-    job_id = list_resp.text[start : list_resp.text.index('"', start)]
+    job_id = _first_job_id(list_resp.text)
     client.post(f"/jobs/{job_id}/set-state", data={"state": "applied"}, follow_redirects=False)
 
     # Default view still shows the tracked job...
@@ -229,13 +238,27 @@ def test_jobs_list_min_fit_filter_keeps_unscored(tmp_path: Path):
     assert "Backend Engineer" in resp.text  # unscored, always kept
 
 
+def test_jobs_list_role_cell_combines_company_and_location(tmp_path: Path):
+    client = _client_with_db(tmp_path)
+    resp = client.get("/jobs")
+    assert 'class="role-cell"' in resp.text
+    assert 'class="role-title"' in resp.text
+    assert "Stripe &middot; Remote US" in resp.text or "Stripe · Remote US" in resp.text
+
+
+def test_jobs_list_empty_state_has_correct_colspan(tmp_path: Path):
+    client, _ = _client(tmp_path)  # no DB jobs at all
+    resp = client.get("/jobs")
+    assert 'colspan="6"' in resp.text
+    assert "No jobs match these filters." in resp.text
+
+
 def test_job_detail_shows_dimension_breakdown_and_sponsorship(tmp_path: Path):
     client = _client_with_db(tmp_path)
     with_db_client = client
     # Look up the scored job's id via the list page link.
     list_resp = with_db_client.get("/jobs")
-    start = list_resp.text.index('/jobs/') + len("/jobs/")
-    job_id = list_resp.text[start : list_resp.text.index('"', start)]
+    job_id = _first_job_id(list_resp.text)
 
     resp = with_db_client.get(f"/jobs/{job_id}")
     assert resp.status_code == 200
@@ -294,8 +317,7 @@ def test_job_detail_renders_cleaned_jd_and_chips(tmp_path: Path):
 def test_job_detail_jd_fallback_when_absent(tmp_path: Path):
     client = _client_with_db(tmp_path)  # jobs here have no jd_text
     list_resp = client.get("/jobs")
-    start = list_resp.text.index("/jobs/") + len("/jobs/")
-    job_id = list_resp.text[start : list_resp.text.index('"', start)]
+    job_id = _first_job_id(list_resp.text)
     assert "No description stored" in client.get(f"/jobs/{job_id}").text
 
 
@@ -376,8 +398,7 @@ def test_packet_section_shows_not_generated_when_missing(tmp_path: Path):
 def test_job_queue_and_mark_applied_actions(tmp_path: Path):
     client = _client_with_db(tmp_path)
     list_resp = client.get("/jobs")
-    start = list_resp.text.index("/jobs/") + len("/jobs/")
-    job_id = list_resp.text[start : list_resp.text.index('"', start)]
+    job_id = _first_job_id(list_resp.text)
 
     detail = client.get(f"/jobs/{job_id}")
     assert 'class="state">found' in detail.text
@@ -402,8 +423,7 @@ def test_job_queue_404_for_missing_job(tmp_path: Path):
 def test_job_set_state_any_direction(tmp_path: Path):
     client = _client_with_db(tmp_path)
     list_resp = client.get("/jobs")
-    start = list_resp.text.index("/jobs/") + len("/jobs/")
-    job_id = list_resp.text[start : list_resp.text.index('"', start)]
+    job_id = _first_job_id(list_resp.text)
 
     resp = client.post(
         f"/jobs/{job_id}/set-state", data={"state": "interviewing"}, follow_redirects=False
@@ -426,8 +446,7 @@ def test_job_set_state_any_direction(tmp_path: Path):
 def test_job_untrack_button_and_route(tmp_path: Path):
     client = _client_with_db(tmp_path)
     list_resp = client.get("/jobs")
-    start = list_resp.text.index("/jobs/") + len("/jobs/")
-    job_id = list_resp.text[start : list_resp.text.index('"', start)]
+    job_id = _first_job_id(list_resp.text)
 
     untrack_action = f'action="/jobs/{job_id}/untrack"'
     # Untracked jobs offer no Untrack button (nothing to remove).
@@ -474,8 +493,7 @@ def test_applications_tab_lists_tracked_by_activity(tmp_path: Path):
 def test_jobs_tab_shows_state_badge_not_apply_for_tracked(tmp_path: Path):
     client = _client_with_db(tmp_path)
     list_resp = client.get("/jobs")
-    start = list_resp.text.index("/jobs/") + len("/jobs/")
-    job_id = list_resp.text[start : list_resp.text.index('"', start)]
+    job_id = _first_job_id(list_resp.text)
 
     client.post(f"/jobs/{job_id}/set-state", data={"state": "interviewing"}, follow_redirects=False)
     page = client.get("/jobs").text
@@ -823,6 +841,307 @@ def test_integrations_rows_are_editable_controls(tmp_path: Path):
         assert f'name="{field}"' in text
 
 
+def test_integrations_email_row_hides_sync_button_when_not_connected(tmp_path: Path):
+    client, _ = _client(tmp_path)
+    text = client.get("/integrations").text
+    assert 'action="/integrations/sync-email"' not in text
+
+
+def test_integrations_email_row_shows_sync_button_when_connected(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("AZURE_CLIENT_ID", "test-client-id")
+    token_cache = tmp_path / "token_cache.bin"
+    token_cache.write_text("x")
+    monkeypatch.setattr("copilot.email_agent.outlook.TOKEN_CACHE_PATH", token_cache)
+    client, _ = _client(tmp_path)
+    text = client.get("/integrations").text
+    assert 'action="/integrations/sync-email"' in text
+    assert "Sync now" in text
+
+
+def test_sync_email_route_reports_handled_count_and_suggestions(tmp_path: Path, monkeypatch):
+    from copilot.email_agent.sync import SyncResult
+
+    monkeypatch.setattr("copilot.email_agent.provider.get_provider", lambda profile: object())
+    monkeypatch.setattr(
+        "copilot.email_agent.sync.run_sync",
+        lambda session, provider, profile: SyncResult(
+            fetched=5, skipped_prefilter=1, skipped_seen=1, suggestions=1, conflicts=0,
+        ),
+    )
+    client, _ = _client(tmp_path)
+    resp = client.post("/integrations/sync-email")
+    assert resp.status_code == 200
+    assert "Synced: 3 messages handled" in resp.text
+    assert "1 suggestion(s) awaiting your review" in resp.text
+
+
+def test_sync_email_route_shows_error_on_failure(tmp_path: Path, monkeypatch):
+    def boom(profile):
+        raise RuntimeError("not signed in")
+
+    monkeypatch.setattr("copilot.email_agent.provider.get_provider", boom)
+    client, _ = _client(tmp_path)
+    resp = client.post("/integrations/sync-email")
+    assert resp.status_code == 200
+    assert "Sync failed: not signed in" in resp.text
+
+
+def test_preferences_page_has_clear_all_buttons_and_hover_tooltips(tmp_path: Path):
+    client, _ = _client(tmp_path)
+    text = client.get("/preferences").text
+    assert 'data-clear-target="titles"' in text
+    assert 'data-clear-target="industry_preference"' in text
+    assert "Clear all" in text
+    # Hover tooltip warns this is a real Claude API call before the button is clicked.
+    assert "Claude" in text and "API call" in text
+
+
+def test_suggest_titles_route_prefills_chips_without_saving(tmp_path: Path, monkeypatch):
+    from copilot.title_suggestions import TitleSuggestion
+
+    monkeypatch.setattr("copilot.resume.extract_resume_profile", lambda profile: object())
+    monkeypatch.setattr(
+        "copilot.title_suggestions.suggest_target_titles",
+        lambda profile, resume: [
+            TitleSuggestion(title="Staff Data Scientist", reasoning="fits", demand_signal="high"),
+            TitleSuggestion(title="ML Platform Lead", reasoning="fits", demand_signal="rising"),
+        ],
+    )
+    client, profile_path = _client(tmp_path)
+    before = profile_path.read_text()
+
+    resp = client.post("/preferences/suggest-titles")
+    assert resp.status_code == 200
+    assert "Added 2 new titles from your resume" in resp.text
+    assert "Staff Data Scientist" in resp.text
+    assert "ML Platform Lead" in resp.text
+    # Never written to profile.yaml - only the Save button does that.
+    assert profile_path.read_text() == before
+
+
+def test_suggest_titles_route_keeps_existing_and_only_adds_new(tmp_path: Path, monkeypatch):
+    """The user's own chips (submitted from the live form, whether saved to
+    profile.yaml yet or not) must survive a Suggest click untouched, with
+    only genuinely new suggestions appended - and a suggestion that duplicates
+    an existing chip must not be added twice."""
+    from copilot.title_suggestions import TitleSuggestion
+
+    monkeypatch.setattr("copilot.resume.extract_resume_profile", lambda profile: object())
+    monkeypatch.setattr(
+        "copilot.title_suggestions.suggest_target_titles",
+        lambda profile, resume: [
+            TitleSuggestion(title="Hand-Added Title", reasoning="", demand_signal=""),  # already present
+            TitleSuggestion(title="Brand New Title", reasoning="", demand_signal=""),
+        ],
+    )
+    client, _ = _client(tmp_path)
+    resp = client.post(
+        "/preferences/suggest-titles", data={"titles": "My Own Title\nHand-Added Title"}
+    )
+    assert resp.status_code == 200
+    assert "Added 1 new title from your resume (1 already there)" in resp.text
+    assert "My Own Title" in resp.text  # untouched
+    assert "Hand-Added Title" in resp.text  # not duplicated
+    assert resp.text.count("Hand-Added Title") <= 2  # once in the textarea value, not twice
+    assert "Brand New Title" in resp.text
+
+
+def test_suggest_titles_route_shows_error_on_failure(tmp_path: Path, monkeypatch):
+    def boom(profile):
+        raise RuntimeError("resume unreadable")
+
+    monkeypatch.setattr("copilot.resume.extract_resume_profile", boom)
+    client, _ = _client(tmp_path)
+    resp = client.post("/preferences/suggest-titles", data={"titles": "Keep Me"})
+    assert resp.status_code == 200
+    assert "Suggest titles failed: resume unreadable" in resp.text
+    assert "Keep Me" in resp.text  # current chips preserved even on failure
+
+
+def test_suggest_industries_route_prefills_chips_without_saving(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("copilot.resume.extract_resume_profile", lambda profile: SimpleNamespace(domains=["fintech"]))
+    monkeypatch.setattr(
+        "copilot.industry.suggest_industry_preference", lambda profile, domains: ["tech", "banking"]
+    )
+    client, profile_path = _client(tmp_path)
+    before = profile_path.read_text()
+
+    resp = client.post("/preferences/suggest-industries")
+    assert resp.status_code == 200
+    assert "Added 2 new industries from your resume" in resp.text
+    assert profile_path.read_text() == before
+
+
+def test_suggest_industries_route_keeps_existing_and_only_adds_new(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("copilot.resume.extract_resume_profile", lambda profile: SimpleNamespace(domains=["fintech"]))
+    monkeypatch.setattr(
+        "copilot.industry.suggest_industry_preference", lambda profile, domains: ["banking", "tech"]
+    )
+    client, _ = _client(tmp_path)
+    resp = client.post(
+        "/preferences/suggest-industries", data={"industry_preference": "consulting\nbanking"}
+    )
+    assert resp.status_code == 200
+    assert "Added 1 new industry from your resume (1 already there)" in resp.text
+    assert "consulting\nbanking\ntech" in resp.text  # existing order kept, new appended
+
+
+def test_suggest_industries_route_handles_no_clean_mapping(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("copilot.resume.extract_resume_profile", lambda profile: SimpleNamespace(domains=["obscure thing"]))
+    monkeypatch.setattr("copilot.industry.suggest_industry_preference", lambda profile, domains: [])
+    client, _ = _client(tmp_path)
+    resp = client.post("/preferences/suggest-industries")
+    assert resp.status_code == 200
+    assert "nothing in your resume mapped cleanly" in resp.text
+
+
+def test_suggest_industries_route_shows_error_on_failure(tmp_path: Path, monkeypatch):
+    def boom(profile):
+        raise RuntimeError("resume unreadable")
+
+    monkeypatch.setattr("copilot.resume.extract_resume_profile", boom)
+    client, _ = _client(tmp_path)
+    resp = client.post("/preferences/suggest-industries", data={"industry_preference": "banking"})
+    assert resp.status_code == 200
+    assert "Suggest industries failed: resume unreadable" in resp.text
+
+
+def test_jobs_search_route_reports_results(tmp_path: Path, monkeypatch):
+    from copilot.discovery.pipeline import DiscoverySummary
+
+    monkeypatch.setenv("ADZUNA_APP_ID", "id")
+    monkeypatch.setenv("ADZUNA_APP_KEY", "key")
+    monkeypatch.setattr(
+        "copilot.discovery.pipeline.run_discovery",
+        lambda profile, session, **kw: DiscoverySummary(found=12, added=5, duplicates=7),
+    )
+    monkeypatch.setattr("copilot.discovery.pipeline.resolve_and_poll_ats", lambda profile, session: None)
+    monkeypatch.setattr("copilot.discovery.pipeline.geocode_missing_coordinates", lambda session: 0)
+    monkeypatch.setattr("copilot.discovery.pipeline.classify_new_companies", lambda profile, session: 0)
+    client, _ = _client(tmp_path)
+
+    resp = client.post("/jobs/search")
+    assert resp.status_code == 200
+    assert "Found 12 postings, 5 new, 7 already known" in resp.text
+    assert "5 new jobs still need scoring" in resp.text
+
+
+def test_jobs_search_route_requires_a_discovery_source(tmp_path: Path, monkeypatch):
+    for var in ("ADZUNA_APP_ID", "ADZUNA_APP_KEY", "JSEARCH_API_KEY"):
+        monkeypatch.delenv(var, raising=False)
+    client, _ = _client(tmp_path)
+    resp = client.post("/jobs/search")
+    assert resp.status_code == 200
+    assert "No discovery source configured" in resp.text
+
+
+def test_jobs_search_route_shows_error_on_failure(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("ADZUNA_APP_ID", "id")
+    monkeypatch.setenv("ADZUNA_APP_KEY", "key")
+
+    def boom(profile, session, **kw):
+        raise RuntimeError("network unreachable")
+
+    monkeypatch.setattr("copilot.discovery.pipeline.run_discovery", boom)
+    client, _ = _client(tmp_path)
+    resp = client.post("/jobs/search")
+    assert resp.status_code == 200
+    assert "Search failed: network unreachable" in resp.text
+
+
+def test_jobs_search_reports_quota_exhaustion(tmp_path: Path, monkeypatch):
+    from copilot.discovery.pipeline import DiscoverySummary
+
+    monkeypatch.setenv("JSEARCH_API_KEY", "key")
+    monkeypatch.setattr(
+        "copilot.discovery.pipeline.run_discovery",
+        lambda profile, session, **kw: DiscoverySummary(found=0, added=0, duplicates=0, quota_exhausted=["JSearch"]),
+    )
+    monkeypatch.setattr("copilot.discovery.pipeline.resolve_and_poll_ats", lambda profile, session: None)
+    monkeypatch.setattr("copilot.discovery.pipeline.geocode_missing_coordinates", lambda session: 0)
+    monkeypatch.setattr("copilot.discovery.pipeline.classify_new_companies", lambda profile, session: 0)
+    client, _ = _client(tmp_path)
+    resp = client.post("/jobs/search")
+    assert "JSearch hit its usage limit" in resp.text
+
+
+def test_jobs_score_batch_scores_oldest_unscored_first(tmp_path: Path, monkeypatch):
+    from copilot.scoring.rubric import ScoreRunResult
+
+    client = _client_with_db(tmp_path)
+    calls = []
+    monkeypatch.setattr("copilot.resume.extract_resume_profile", lambda profile: object())
+    monkeypatch.setattr(
+        "copilot.scoring.rubric.score_and_apply",
+        lambda session, profile, resume, jobs, **kw: (calls.append(len(jobs)), ScoreRunResult(scored=len(jobs), missing=0))[1],
+    )
+    resp = client.post("/jobs/score-batch", data={"count": "10"})
+    assert resp.status_code == 200
+    assert "Scored" in resp.text
+    assert calls  # score_and_apply was actually invoked with the unscored jobs
+
+
+def test_jobs_score_batch_nothing_to_score(tmp_path: Path):
+    client, _ = _client(tmp_path)  # no DB jobs at all
+    resp = client.post("/jobs/score-batch", data={"count": "10"})
+    assert resp.status_code == 200
+    assert "Nothing to score" in resp.text
+
+
+def test_jobs_score_batch_clamps_count_to_a_sane_range(tmp_path: Path, monkeypatch):
+    from copilot.scoring.rubric import ScoreRunResult
+
+    client = _client_with_db(tmp_path)
+    seen_limits = []
+    monkeypatch.setattr("copilot.resume.extract_resume_profile", lambda profile: object())
+    monkeypatch.setattr(
+        "copilot.scoring.rubric.score_and_apply",
+        lambda session, profile, resume, jobs, **kw: ScoreRunResult(scored=len(jobs), missing=0),
+    )
+    # A wildly out-of-range count must not blow up or query for 100000 rows.
+    resp = client.post("/jobs/score-batch", data={"count": "100000"})
+    assert resp.status_code == 200
+
+
+def test_job_score_one_scores_and_redirects_to_detail(tmp_path: Path, monkeypatch):
+    from copilot.scoring.rubric import ScoreRunResult
+
+    client = _client_with_db(tmp_path)
+    list_resp = client.get("/jobs")
+    job_id = _first_job_id(list_resp.text)
+
+    monkeypatch.setattr("copilot.resume.extract_resume_profile", lambda profile: object())
+    called = {}
+    monkeypatch.setattr(
+        "copilot.scoring.rubric.score_and_apply",
+        lambda session, profile, resume, jobs, **kw: (called.setdefault("jobs", jobs), ScoreRunResult(scored=1, missing=0))[1],
+    )
+    resp = client.post(f"/jobs/{job_id}/score", follow_redirects=False)
+    assert resp.status_code == 303
+    assert resp.headers["location"] == f"/jobs/{job_id}"
+    assert called["jobs"][0].id == int(job_id)
+
+
+def test_job_score_one_404_for_missing_job(tmp_path: Path):
+    client, _ = _client(tmp_path)
+    resp = client.post("/jobs/999/score")
+    assert resp.status_code == 404
+
+
+def test_job_score_one_shows_error_on_failure(tmp_path: Path, monkeypatch):
+    client = _client_with_db(tmp_path)
+    list_resp = client.get("/jobs")
+    job_id = _first_job_id(list_resp.text)
+
+    def boom(profile):
+        raise RuntimeError("resume unreadable")
+
+    monkeypatch.setattr("copilot.resume.extract_resume_profile", boom)
+    resp = client.post(f"/jobs/{job_id}/score")
+    assert resp.status_code == 500
+    assert "Scoring failed: resume unreadable" in resp.text
+
+
 def test_config_env_writes_submitted_keys_and_redirects(tmp_path: Path, monkeypatch):
     calls = []
     monkeypatch.setattr("copilot.envfile.set_env", lambda k, v: calls.append((k, v)))
@@ -910,6 +1229,97 @@ def test_usage_page_shows_not_connected_without_keys(tmp_path: Path, monkeypatch
     client, _ = _client(tmp_path)
     resp = client.get("/usage")
     assert "not connected" in resp.text
+
+
+def test_usage_page_shows_tracked_anthropic_spend(tmp_path: Path, monkeypatch):
+    from copilot.api_usage import AnthropicSpend
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setattr(
+        "copilot.api_usage.get_anthropic_spend",
+        lambda: AnthropicSpend(month="2026-07", calls=12, input_tokens=50000,
+                                output_tokens=8000, cache_creation_tokens=0,
+                                cache_read_tokens=0, cost_usd=0.42),
+    )
+    client, _ = _client(tmp_path)
+    resp = client.get("/usage")
+    assert "$0.42 est. this month" in resp.text
+    assert "12 calls" in resp.text
+
+
+def test_usage_page_anthropic_no_calls_yet_is_honest_not_zero(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setattr("copilot.api_usage.get_anthropic_spend", lambda: None)
+    client, _ = _client(tmp_path)
+    resp = client.get("/usage")
+    assert "no calls recorded yet this month" in resp.text
+
+
+def test_usage_page_uscis_row_shows_not_downloaded_when_uncached(tmp_path: Path):
+    client, _ = _client(tmp_path)
+    resp = client.get("/usage")
+    assert "not downloaded yet" in resp.text
+    assert 'action="/usage/refresh-h1b"' in resp.text
+
+
+def test_usage_page_uscis_row_shows_cached_year(tmp_path: Path):
+    (tmp_path / "h1b_data_hub_fy2024.csv").write_text("x")
+    client, _ = _client(tmp_path)
+    resp = client.get("/usage")
+    assert "FY2024 cached" in resp.text
+
+
+def test_usage_refresh_h1b_reports_newer_year_found(tmp_path: Path, monkeypatch):
+    from copilot.scoring.sponsorship import SponsorshipSyncSummary
+
+    monkeypatch.setattr("copilot.scoring.sponsorship.refresh_h1b_data", lambda: (2025, True))
+    monkeypatch.setattr(
+        "copilot.scoring.sponsorship.sync_sponsorship_data",
+        lambda session, cache_path, year: SponsorshipSyncSummary(companies_checked=3, matched=2),
+    )
+    client, _ = _client(tmp_path)
+    resp = client.post("/usage/refresh-h1b")
+    assert resp.status_code == 200
+    assert "Found and switched to FY2025 data" in resp.text
+    assert "matched 2 of 3 companies" in resp.text
+
+
+def test_usage_refresh_h1b_reports_nothing_newer(tmp_path: Path, monkeypatch):
+    from copilot.scoring.sponsorship import SponsorshipSyncSummary
+
+    monkeypatch.setattr("copilot.scoring.sponsorship.refresh_h1b_data", lambda: (2023, False))
+    monkeypatch.setattr(
+        "copilot.scoring.sponsorship.sync_sponsorship_data",
+        lambda session, cache_path, year: SponsorshipSyncSummary(companies_checked=1, matched=0),
+    )
+    client, _ = _client(tmp_path)
+    resp = client.post("/usage/refresh-h1b")
+    assert "No newer report published yet" in resp.text
+    assert "FY2023 data still current" in resp.text
+
+
+def test_usage_refresh_h1b_shows_error_on_failure(tmp_path: Path, monkeypatch):
+    def _boom():
+        raise RuntimeError("USCIS unreachable")
+
+    monkeypatch.setattr("copilot.scoring.sponsorship.refresh_h1b_data", _boom)
+    client, _ = _client(tmp_path)
+    resp = client.post("/usage/refresh-h1b")
+    assert resp.status_code == 200
+    assert "Refresh failed: USCIS unreachable" in resp.text
+
+
+def test_api_suggestions_returns_seed_and_db_data(tmp_path: Path):
+    client = _client_with_db(tmp_path)
+    resp = client.get("/api/suggestions")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "ML Engineer" in data["titles"]  # from the DB fixture
+    assert "Software Engineer" in data["titles"]  # from the static seed
+    assert "Stripe" in data["companies"]
+    assert "NoSponsor Inc" in data["companies"]
+    assert "Remote" in data["locations"]
+    assert len(data["industries"]) > 0
 
 
 def test_save_rejects_invalid_and_writes_nothing(tmp_path: Path):

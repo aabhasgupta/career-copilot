@@ -48,7 +48,7 @@ def make_resume() -> ResumeProfile:
 
 
 def test_parses_suggestions_from_response():
-    with patch("copilot.title_suggestions.Anthropic") as mock_client:
+    with patch("copilot.llm.Anthropic") as mock_client:
         mock_client.return_value.messages.create.return_value = text_response(
             SUGGESTIONS_JSON
         )
@@ -63,7 +63,7 @@ def test_parses_suggestions_from_response():
 
 
 def test_resumes_on_pause_turn_then_parses():
-    with patch("copilot.title_suggestions.Anthropic") as mock_client:
+    with patch("copilot.llm.Anthropic") as mock_client:
         mock_client.return_value.messages.create.side_effect = [
             text_response("still searching...", stop_reason="pause_turn"),
             text_response(SUGGESTIONS_JSON, stop_reason="end_turn"),
@@ -75,7 +75,7 @@ def test_resumes_on_pause_turn_then_parses():
 
 
 def test_gives_up_after_max_resumes():
-    with patch("copilot.title_suggestions.Anthropic") as mock_client:
+    with patch("copilot.llm.Anthropic") as mock_client:
         mock_client.return_value.messages.create.return_value = text_response(
             "never finishes", stop_reason="pause_turn"
         )
@@ -84,7 +84,7 @@ def test_gives_up_after_max_resumes():
 
 
 def test_missing_json_block_raises():
-    with patch("copilot.title_suggestions.Anthropic") as mock_client:
+    with patch("copilot.llm.Anthropic") as mock_client:
         mock_client.return_value.messages.create.return_value = text_response(
             "Here are some titles: Backend Engineer, Platform Engineer."
         )

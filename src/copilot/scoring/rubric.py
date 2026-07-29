@@ -14,11 +14,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from anthropic import Anthropic
 from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
 
+from copilot import llm
 from copilot.config import Profile
-from copilot.db.models import VisaSignal
+from copilot.db.models import Job, VisaSignal
 from copilot.resume import ResumeProfile
 
 _JD_TEXT_LIMIT = 6000  # characters; keeps batched prompts a sane size
@@ -140,12 +141,11 @@ def score_jobs(
         return results
 
     resume_block = _resume_block(resume)
-    client = Anthropic()
 
     for i in range(0, len(jobs), batch_size):
         batch = jobs[i : i + batch_size]
         jobs_block = "\n\n".join(_job_block(j) for j in batch)
-        response = client.messages.parse(
+        response = llm.parse(
             model=profile.llm.model,
             max_tokens=8000,
             messages=[
@@ -162,3 +162,42 @@ def score_jobs(
             results[score.job_id] = score
 
     return results
+
+
+@dataclass
+class ScoreRunResult:
+    scored: int
+    missing: int
+
+
+def score_and_apply(
+    session: Session, profile: Profile, resume: ResumeProfile, jobs: list[Job], batch_size: int = 8
+) -> ScoreRunResult:
+    """Score `jobs` (ORM rows, not yet scored) and write the results back onto
+    them, committing - the shared apply step both `copilot score` and the
+    dashboard's score routes use, so what "scored" means can't drift between
+    the two (same reasoning as ranking.py's single rank_jobs())."""
+    if not jobs:
+        return ScoreRunResult(scored=0, missing=0)
+    to_score = [
+        JobToScore(
+            id=j.id, title=j.title, company=j.company.name if j.company else "?",
+            location=j.location, remote=j.remote, salary_min=j.salary_min,
+            salary_max=j.salary_max, jd_text=j.jd_text,
+        )
+        for j in jobs
+    ]
+    scores = score_jobs(profile, resume, to_score, batch_size=batch_size)
+    by_id = {j.id: j for j in jobs}
+    for job_id, result in scores.items():
+        job = by_id[job_id]
+        job.fit_score = result.fit_score
+        job.fit_reasoning = result.reasoning
+        job.visa_signal = result.visa_signal
+        job.skill_match_score = result.skill_match_score
+        job.experience_level_score = result.experience_level_score
+        job.domain_fit_score = result.domain_fit_score
+        job.location_fit_score = result.location_fit_score
+        job.visa_feasibility_score = result.visa_feasibility_score
+    session.commit()
+    return ScoreRunResult(scored=len(scores), missing=len(jobs) - len(scores))

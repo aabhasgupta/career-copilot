@@ -6,6 +6,13 @@
   <span class="rdot {{ r.dot }}"></span>
   <span class="rname">{{ r.label }}</span>
   <span class="rnote">{{ r.note }}</span>
+  {% if r.action %}
+  <span class="ract">
+    <form class="inline" method="post" action="{{ r.action }}">
+      <button class="mini secondary" type="submit">Refresh</button>
+    </form>
+  </span>
+  {% endif %}
 </div>
 {% endmacro %}
 
@@ -14,6 +21,8 @@
   <h1>API usage</h1>
   <p>What each external service is for, whether it's connected, and known quota. Hover a row for details.</p>
 </div>
+
+{{ flash|safe }}
 
 <div class="integ-section">
   <h2>Metered</h2>

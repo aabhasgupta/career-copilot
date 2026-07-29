@@ -320,7 +320,7 @@ def score(
     from copilot.db import get_engine, get_session
     from copilot.db.models import Job
     from copilot.resume import extract_resume_profile
-    from copilot.scoring.rubric import JobToScore, score_jobs
+    from copilot.scoring.rubric import score_and_apply
 
     with console.status("Reading resume..."):
         resume = extract_resume_profile(profile)
@@ -341,41 +341,13 @@ def score(
             )
             return
 
-        to_score = [
-            JobToScore(
-                id=j.id,
-                title=j.title,
-                company=j.company.name if j.company else "?",
-                location=j.location,
-                remote=j.remote,
-                salary_min=j.salary_min,
-                salary_max=j.salary_max,
-                jd_text=j.jd_text,
-            )
-            for j in jobs
-        ]
+        with console.status(f"Scoring {len(jobs)} jobs against your resume..."):
+            result = score_and_apply(session, profile, resume, jobs, batch_size=batch_size)
 
-        with console.status(f"Scoring {len(to_score)} jobs against your resume..."):
-            scores = score_jobs(profile, resume, to_score, batch_size=batch_size)
-
-        by_id = {j.id: j for j in jobs}
-        for job_id, result in scores.items():
-            job = by_id[job_id]
-            job.fit_score = result.fit_score
-            job.fit_reasoning = result.reasoning
-            job.visa_signal = result.visa_signal
-            job.skill_match_score = result.skill_match_score
-            job.experience_level_score = result.experience_level_score
-            job.domain_fit_score = result.domain_fit_score
-            job.location_fit_score = result.location_fit_score
-            job.visa_feasibility_score = result.visa_feasibility_score
-        session.commit()
-
-    missing = len(to_score) - len(scores)
-    console.print(f"[green]Scored {len(scores)}[/] jobs.")
-    if missing:
+    console.print(f"[green]Scored {result.scored}[/] jobs.")
+    if result.missing:
         console.print(
-            f"[yellow]{missing} jobs got no score back[/] - left unscored, "
+            f"[yellow]{result.missing} jobs got no score back[/] - left unscored, "
             "re-run 'copilot score' to retry them."
         )
     console.print("[dim]Run 'copilot jobs list' to see them ranked by fit.[/]")
@@ -384,7 +356,8 @@ def score(
 @app.command("sponsorship-sync")
 def sponsorship_sync(
     refresh: bool = typer.Option(
-        False, "--refresh", help="Re-download the USCIS data even if already cached."
+        False, "--refresh",
+        help="Probe USCIS for a newer fiscal year than what's cached and re-download.",
     ),
 ) -> None:
     """Match your companies against the public USCIS H-1B Employer Data Hub to
@@ -393,18 +366,30 @@ def sponsorship_sync(
     company-wide evidence (not a live policy) and is never folded into
     fit_score - see it via 'copilot jobs show <id>'."""
     from copilot.db import get_engine, get_session
-    from copilot.scoring.sponsorship import FISCAL_YEAR, download_data, sync_sponsorship_data
+    from copilot.scoring.sponsorship import (
+        current_cached_year, download_data, h1b_cache_path, refresh_h1b_data, sync_sponsorship_data,
+    )
 
-    with console.status("Downloading USCIS H-1B Employer Data Hub (cached after first run)..."):
-        cache_path = download_data(force=refresh)
+    if refresh:
+        with console.status("Checking USCIS for a newer H-1B Employer Data Hub report..."):
+            year, found_newer = refresh_h1b_data()
+        if found_newer:
+            console.print(f"[green]Found and switched to FY{year} data.[/]")
+        else:
+            console.print(f"[dim]No newer report published yet - re-verified FY{year} data.[/]")
+    else:
+        year = current_cached_year()
+        with console.status("Downloading USCIS H-1B Employer Data Hub (cached after first run)..."):
+            download_data(year=year)
 
+    cache_path = h1b_cache_path(year)
     with get_session(get_engine()) as session:
         with console.status("Matching companies against filing data..."):
-            summary = sync_sponsorship_data(session, cache_path=cache_path)
+            summary = sync_sponsorship_data(session, cache_path=cache_path, year=year)
 
     console.print(
         f"[green]Matched {summary.matched}[/] of {summary.companies_checked} companies "
-        f"against FY{FISCAL_YEAR} H1B filing data."
+        f"against FY{year} H1B filing data."
     )
     console.print(
         "[dim]Historical, company-wide evidence, not a live policy - see "

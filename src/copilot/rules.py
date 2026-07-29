@@ -15,9 +15,9 @@ import json
 from enum import Enum
 from pathlib import Path
 
-from anthropic import Anthropic
 from pydantic import BaseModel
 
+from copilot import llm
 from copilot.config import DATA_DIR, Profile
 
 RULES_CACHE_PATH = DATA_DIR / "dealbreaker_rules.json"
@@ -72,8 +72,7 @@ def _cache_key(dealbreakers: list[str], model: str) -> str:
 
 def _compile(profile: Profile) -> CompiledRules:
     block = "\n".join(f"- {rule}" for rule in profile.search.dealbreakers)
-    client = Anthropic()
-    response = client.messages.parse(
+    response = llm.parse(
         model=profile.llm.model,
         max_tokens=4000,
         messages=[{"role": "user", "content": PROMPT_TEMPLATE.format(rules_block=block)}],

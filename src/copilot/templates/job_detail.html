@@ -47,7 +47,15 @@
 </article>
 
 {% if job.fit_score is none %}
-<article><p class="sub">Not scored yet. Run <code>copilot score</code> to add this job.</p></article>
+<article>
+  <p class="sub">Not scored yet.</p>
+  <form method="post" action="/jobs/{{ job.id }}/score" class="inline">
+    <button type="submit" class="mini ghost"
+      title="Uses a real Claude API call to score this one job against your resume - takes a few seconds.">
+      Score this job
+    </button>
+  </form>
+</article>
 {% else %}
 <article>
   <h3>Fit: {{ "%.0f"|format(job.fit_score) }}/100</h3>

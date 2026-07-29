@@ -39,7 +39,7 @@ def test_cache_hit_skips_api(tmp_path: Path):
     profile = make_profile(tmp_path)
     cache = tmp_path / "cache.json"
 
-    with patch("copilot.resume.Anthropic") as mock_client:
+    with patch("copilot.llm.Anthropic") as mock_client:
         mock_client.return_value.messages.parse.return_value.parsed_output = FAKE_PROFILE
         first = extract_resume_profile(profile, cache_path=cache)
         second = extract_resume_profile(profile, cache_path=cache)
@@ -53,7 +53,7 @@ def test_resume_change_invalidates_cache(tmp_path: Path):
     profile = make_profile(tmp_path)
     cache = tmp_path / "cache.json"
 
-    with patch("copilot.resume.Anthropic") as mock_client:
+    with patch("copilot.llm.Anthropic") as mock_client:
         mock_client.return_value.messages.parse.return_value.parsed_output = FAKE_PROFILE
         extract_resume_profile(profile, cache_path=cache)
         profile.resume_path.write_text("Updated resume content.")

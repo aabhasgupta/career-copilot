@@ -14,9 +14,9 @@ from __future__ import annotations
 
 from enum import Enum
 
-from anthropic import Anthropic
 from pydantic import BaseModel
 
+from copilot import llm
 from copilot.config import Profile
 
 
@@ -75,8 +75,7 @@ def classify_companies(
         f"- {name}" + (f" (posting: {title})" if title else "")
         for name, title in companies
     )
-    client = Anthropic()
-    response = client.messages.parse(
+    response = llm.parse(
         model=profile.llm.model,
         max_tokens=8000,
         messages=[
@@ -87,3 +86,52 @@ def classify_companies(
     return {
         c.company_name: c.industry.value for c in response.parsed_output.companies
     }
+
+
+class IndustryPreferenceSuggestion(BaseModel):
+    industries: list[Industry]
+
+
+SUGGEST_PREFERENCE_PROMPT_TEMPLATE = """A candidate's resume states these domains/
+industries they've worked in:
+{domains_block}
+
+From the fixed list below, choose which ones are a genuine match for the
+candidate's stated domains, ranked most-relevant first. Only include an
+industry if there's a real match - it's fine to return fewer than all the
+domains listed, or none at all if nothing maps cleanly. Never return "other".
+
+Fixed industries: {vocab}"""
+
+
+def suggest_industry_preference(profile: Profile, domains: list[str]) -> list[str]:
+    """Map a resume's free-text `domains` onto the same closed Industry
+    vocabulary classify_companies() assigns to companies - the two are kept
+    on one enum (`Industry`, above) specifically so a suggested preference
+    can never be a value ranking.py's industry_preference matching wouldn't
+    also recognize on a company. Structured output (`output_format`) makes
+    this a type guarantee, not just a prompting convention: Claude can only
+    return `Industry` members, never invented free text."""
+    if not domains:
+        return []
+
+    response = llm.parse(
+        model=profile.llm.model,
+        max_tokens=2000,
+        messages=[{
+            "role": "user",
+            "content": SUGGEST_PREFERENCE_PROMPT_TEMPLATE.format(
+                domains_block="\n".join(f"- {d}" for d in domains),
+                vocab=", ".join(i.value for i in Industry if i != Industry.other),
+            ),
+        }],
+        output_format=IndustryPreferenceSuggestion,
+    )
+    seen: set[str] = set()
+    ranked: list[str] = []
+    for industry in response.parsed_output.industries:
+        if industry == Industry.other or industry.value in seen:
+            continue
+        seen.add(industry.value)
+        ranked.append(industry.value)
+    return ranked

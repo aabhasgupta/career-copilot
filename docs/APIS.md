@@ -10,6 +10,7 @@ Every third-party service this project talks to, what it's for, how it's authent
 - **Auth:** `ANTHROPIC_API_KEY` in `.env`
 - **Model:** `claude-sonnet-5` (set in `profile.yaml` under `llm.model`)
 - **Billing:** pay-as-you-go, no fixed monthly quota - cost scales with tokens used
+- **No balance/credits-remaining API exists** (confirmed 2026-07-27) for a standard API key. The only official facility is the Usage & Cost Admin API, which needs a separate Admin API key (`sk-ant-admin01-...`, more privileged than `ANTHROPIC_API_KEY`) and reports historical spend over a date range, not account balance/limit headroom - that figure is Console-only, not exposed by any API. Instead, `src/copilot/llm.py` is the single choke point every call site goes through (`llm.create`/`llm.parse`, replacing six independent `Anthropic()` instantiations) and self-tracks estimated spend from real calls' `response.usage` into `data/api_usage.json`, shown on the dashboard's API usage page - an estimate of this tool's own usage, not the real account balance (docs/DECISIONS.md D34).
 - **Docs:** console.anthropic.com
 
 ### JSearch (RapidAPI)
@@ -66,9 +67,9 @@ Every third-party service this project talks to, what it's for, how it's authent
 - **Used for:** company-level H1B sponsorship evidence (`scoring/sponsorship.py`, `copilot sponsorship-sync`) - historical filing counts as transfer-likelihood evidence, surfaced separately from `fit_score`, never blended into it (docs/DECISIONS.md D18).
 - **Auth:** none - it's a public downloadable CSV, not a rate-limited API. Requires a normal browser `User-Agent` header though; non-browser requests get blocked (confirmed live 2026-07-19).
 - **Endpoint:** `GET uscis.gov/sites/default/files/document/data/h1b_datahubexport-{year}.csv`
-- **Latest available year (confirmed live 2026-07-19 and again 2026-07-23):** FY2023 - FY2024 and FY2025 URLs both 404. Update `FISCAL_YEAR` in `scoring/sponsorship.py` if USCIS publishes a newer export.
+- **Latest available year (confirmed live 2026-07-19, 2026-07-23, and again 2026-07-27):** FY2023 - FY2024, FY2025, and FY2026 URLs all 404. `FISCAL_YEAR` in `scoring/sponsorship.py` is only the cold-start fallback now; `current_cached_year()` reads the real year back from the cache filename, and `probe_newer_year()`/`refresh_h1b_data()` check for a newer export on demand rather than needing the constant hand-updated (docs/DECISIONS.md D36).
 - **Schema:** `Fiscal Year, Employer, Initial Approval, Initial Denial, Continuing Approval, Continuing Denial, NAICS, Tax ID, State, City, ZIP`. Multiple rows per employer (different worksites/Tax IDs) are aggregated by normalized employer name before matching.
-- **Caching:** downloaded once to `data/h1b_data_hub_fy2023.csv` (gitignored); `copilot sponsorship-sync --refresh` forces a re-download.
+- **Caching:** downloaded once to `data/h1b_data_hub_fy{year}.csv` (gitignored); `copilot sponsorship-sync --refresh` (or the "Refresh" button on the dashboard's API usage page) probes for a newer fiscal year and switches to it if one's been published, otherwise re-verifies the current one.
 - **Matching caveat (load-bearing, found live 2026-07-23):** filer names are legal entity names ("AMAZON COM SERVICES LLC") that often differ from the brand name a job posting uses ("Amazon"). Matching is exact-after-normalization first, then a prefix match restricted to distinctive names (2+ words, or 6+ characters as a single word) - short acronym brand names (e.g. "EXL", "CGI") that differ from their legal filer name will often go unmatched by design, favoring precision over recall (same lesson as the Lever slug false-positive in D3).
 
 ### Microsoft Graph API

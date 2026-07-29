@@ -40,6 +40,7 @@ import re
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import urlencode
 
 import yaml as pyyaml
 from fastapi import FastAPI, File, Form, UploadFile
@@ -51,7 +52,7 @@ from sqlalchemy import func, select
 
 from copilot.config import Profile
 from copilot.db import get_engine, get_session, init_db
-from copilot.db.models import Application, ApplicationState, Company, Job
+from copilot.db.models import Application, ApplicationState, Company, Job, SponsorshipStatus, VisaSignal
 from copilot.formatting import format_posted, format_salary
 from copilot.geocode import Geocoder
 from copilot.industry import Industry
@@ -134,6 +135,93 @@ def _state_badge(state: ApplicationState) -> Markup:
 
 def _parse_lines(raw: str) -> list[str]:
     return [line.strip() for line in raw.splitlines() if line.strip()]
+
+
+# Jobs page filters (dashboard.py's jobs_list route). Sources report
+# employment_type as free text that doesn't agree on a format (Adzuna:
+# "Full-time", "Contractor"; JSearch: "full_time", "contract") - checked
+# live against the real DB rather than assumed, so the filter buckets by
+# keyword instead of exact match, or every source's phrasing would need its
+# own dropdown entry.
+_EMPLOYMENT_TYPE_BUCKETS = {
+    "full_time": ("Full-time", "full"),
+    "part_time": ("Part-time", "part"),
+    "contract": ("Contract", "contract"),
+    "internship": ("Internship", "intern"),
+}
+
+
+def _apply_job_filters(stmt, f: dict):
+    """Every filter here follows the same rule already set by min_fit
+    (docs/DECISIONS.md D12/D19): a filter never hides a job just because a
+    field is missing, only because the job is a confirmed non-match - a
+    listing that hasn't reported salary/posting age isn't evidence it fails
+    the filter, just that the source didn't say. Industry and employment
+    type are deliberate exceptions: picking one is an intentional categorical
+    narrow, not a floor, so unknowns are excluded rather than kept - checked
+    against real data before deciding, not assumed: industry is 99%
+    classified (2 of 314 companies unknown) so little is lost, but
+    employment_type is only 62% populated, and an early build that kept
+    unknowns showed why that matters - selecting "Contract" returned 110
+    jobs when only ~22 were actually labeled contract; the other 88 were
+    just unlabeled, which defeats the point of picking a specific type."""
+    if f["title"].strip():
+        stmt = stmt.where(Job.title.ilike(f"%{f['title'].strip()}%"))
+    if f["location"].strip():
+        stmt = stmt.where(Job.location.ilike(f"%{f['location'].strip()}%"))
+    if f["company"].strip():
+        stmt = stmt.where(Job.company.has(Company.name.ilike(f"%{f['company'].strip()}%")))
+    if f["min_fit"].strip():
+        floor = int(f["min_fit"])
+        stmt = stmt.where((Job.fit_score.is_(None)) | (Job.fit_score >= floor))
+    if f["age_ceiling"] is not None:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=f["age_ceiling"])
+        stmt = stmt.where((Job.posted_at.is_(None)) | (Job.posted_at >= cutoff))
+    if f["hide_tracked"]:
+        # Focus on what you haven't acted on yet - drop jobs that already
+        # have an application row.
+        stmt = stmt.where(~Job.application.has())
+    if f["remote_only"]:
+        stmt = stmt.where((Job.remote.is_(True)) | (Job.location.ilike("%remote%")))
+    if f["visa"] == "sponsor":
+        # Positive signal only: an explicit JD statement, or the company has
+        # real USCIS H1B filing history - not just "unknown" by default,
+        # since unknown is the overwhelming majority (D18/D19: sponsorship
+        # evidence is never assumed).
+        stmt = stmt.where(
+            (Job.visa_signal == VisaSignal.explicit_yes)
+            | (Job.company.has(Company.sponsorship_status == SponsorshipStatus.sponsors))
+        )
+    elif f["visa"] == "hide_no":
+        stmt = stmt.where(Job.visa_signal != VisaSignal.explicit_no)
+    if f["industry"].strip():
+        stmt = stmt.where(Job.company.has(Company.industry == f["industry"].strip()))
+    if f["salary_floor"].strip():
+        floor = int(f["salary_floor"])
+        stmt = stmt.where(
+            (Job.salary_min.is_(None) & Job.salary_max.is_(None))
+            | (Job.salary_max >= floor)
+            | (Job.salary_min >= floor)
+        )
+    if f["employment_type"] in _EMPLOYMENT_TYPE_BUCKETS:
+        _, keyword = _EMPLOYMENT_TYPE_BUCKETS[f["employment_type"]]
+        stmt = stmt.where(Job.employment_type.ilike(f"%{keyword}%"))
+    return stmt
+
+
+def _jobs_query_string(f: dict, **overrides) -> str:
+    """Every filter's current value, as a query string - used for the "show
+    more" link and anywhere else the full filter state needs to survive a
+    navigation. `overrides` replaces individual keys (e.g. a bumped limit)."""
+    params = {
+        "min_fit": f["min_fit"], "location": f["location"], "title": f["title"],
+        "company": f["company"], "industry": f["industry"], "salary_floor": f["salary_floor"],
+        "employment_type": f["employment_type"], "max_age": f["max_age_value"],
+        "sort": f["sort"], "hide_tracked": "true" if f["hide_tracked"] else "false",
+        "remote_only": "true" if f["remote_only"] else "false", "visa": f["visa"],
+    }
+    params.update(overrides)
+    return urlencode({k: v for k, v in params.items() if v})
 
 
 def _link_options(session, suggestion) -> Markup:
@@ -254,7 +342,7 @@ def _format_reset(reset_at: datetime | None, now: datetime) -> str:
     return f"resets in {hours}h" if hours >= 1 else "resets soon"
 
 
-def _usage_rows(jsearch_quota, graph_connected: bool) -> tuple[list[dict], list[dict]]:
+def _usage_rows(jsearch_quota, graph_connected: bool, anthropic_spend=None) -> tuple[list[dict], list[dict]]:
     """Rows for the API usage page: what each service is for, whether it's
     connected, and whatever quota was last opportunistically captured (never
     a dedicated call spent just to check status - D33). Read-only and purely
@@ -278,10 +366,32 @@ def _usage_rows(jsearch_quota, graph_connected: bool) -> tuple[list[dict], list[
             parts.append(reset)
         return " · ".join(parts) if parts else "connected"
 
+    def anthropic_note() -> str:
+        if not anthropic_on:
+            return "not connected"
+        if anthropic_spend is None:
+            return "connected - no calls recorded yet this month"
+        if anthropic_spend.cost_usd is None:
+            return f"{anthropic_spend.calls} calls this month - cost unknown for at least one model used"
+        return f"~${anthropic_spend.cost_usd:.2f} est. this month ({anthropic_spend.calls} calls)"
+
+    anthropic_purpose = (
+        "Powers fit scoring, packet tailoring, resume extraction, and inbox classification. "
+        "No account-balance API exists for a standard key - the estimate here is tracked "
+        "from this tool's own calls, not your real Anthropic balance."
+    )
+
+    def uscis_note() -> str:
+        from copilot.scoring.sponsorship import current_cached_year, h1b_cache_path
+
+        if not h1b_cache_path(current_cached_year()).exists():
+            return "not downloaded yet - runs on first sponsorship-sync"
+        return f"FY{current_cached_year()} cached - refresh checks for a newer report"
+
     metered = [
         {"key": "anthropic", "label": "Anthropic API", "dot": "on" if anthropic_on else "off",
-         "note": "connected - pay-as-you-go, no fixed quota" if anthropic_on else "not connected",
-         "purpose": "Powers fit scoring, packet tailoring, resume extraction, and inbox classification."},
+         "note": anthropic_note(),
+         "purpose": anthropic_purpose},
         {"key": "jsearch", "label": "JSearch (RapidAPI)", "dot": "on" if jsearch_on else "off",
          "note": jsearch_note(),
          "purpose": "Job discovery - LinkedIn/Indeed/Glassdoor via Google for Jobs' index. "
@@ -307,8 +417,11 @@ def _usage_rows(jsearch_quota, graph_connected: bool) -> tuple[list[dict], list[
          "note": "always on - throttled to ~1 req/sec, results cached forever",
          "purpose": "Geocodes locations for the \"within N miles of\" preference."},
         {"key": "uscis", "label": "USCIS H-1B Data Hub", "dot": "on",
-         "note": "always on - downloaded once, refresh manually",
-         "purpose": "Company-level H1B sponsorship filing history."},
+         "note": uscis_note(),
+         "purpose": "Company-level H1B sponsorship filing history. USCIS publishes a new "
+                    "fiscal year roughly annually - refresh checks for one and re-matches "
+                    "your companies against it.",
+         "action": "/usage/refresh-h1b"},
     ]
     return metered, free
 
@@ -386,7 +499,14 @@ def create_app(
             schedule=sched,
         )
 
-    def render_prefs(flash: str = "") -> str:
+    def render_prefs(
+        flash: str = "", titles: list[str] | None = None, industry_preference: list[str] | None = None,
+    ) -> str:
+        """titles/industry_preference: override the profile's stored values for
+        this render only - never written to profile.yaml - so a "suggest from
+        resume" result can be shown pre-filled in the chip fields for the user
+        to review/edit, with the page's own Save button (not a separate
+        confirm step) as the only thing that actually persists it."""
         with open(profile_path) as f:
             raw = pyyaml.safe_load(f)
         profile = Profile.model_validate(raw)
@@ -396,12 +516,14 @@ def create_app(
             "/preferences",
             "preferences.html",
             flash=flash,
-            titles=search.titles,
+            titles=titles if titles is not None else search.titles,
             locations=search.locations,
             min_salary=search.min_salary if search.min_salary is not None else "",
             dealbreakers=search.dealbreakers,
             location_preference=search.location_preference,
-            industry_preference=search.industry_preference,
+            industry_preference=(
+                industry_preference if industry_preference is not None else search.industry_preference
+            ),
             company_preference=search.company_preference,
             industry_vocab=", ".join(i.value for i in Industry),
             staffing_checked=search.deprioritize_staffing,
@@ -491,6 +613,16 @@ def create_app(
             )
         return body
 
+    @app.get("/api/suggestions")
+    def api_suggestions() -> dict:
+        """Chip-input autocomplete data for the Preferences page (chiplist.js) -
+        fetched once client-side and filtered locally rather than per-keystroke,
+        since this is a single-user local tool and the lists stay small."""
+        from copilot.autocomplete import get_suggestions
+
+        with get_session(get_engine(db_path)) as session:
+            return get_suggestions(session)
+
     @app.get("/preferences", response_class=HTMLResponse)
     def preferences(saved: str = ""):
         if not _profile_ready():
@@ -504,6 +636,79 @@ def create_app(
         elif saved == "packet":
             flash = '<div class="flash ok">Base packet regenerated.</div>'
         return render_prefs(flash)
+
+    @app.post("/preferences/suggest-titles")
+    def suggest_titles_route(titles: str = Form("")):
+        """Pre-fill the Target titles chips from the resume + a live web
+        search - never written to profile.yaml directly; the page's own Save
+        button is the confirmation step, same as `copilot profile
+        suggest-titles`'s CLI prompt. `titles` arrives from the same <form>
+        the button lives in (a formaction override, not a separate form), so
+        it's whatever's currently in the chips - including edits the user
+        hasn't saved yet - and suggestions are added on top, never replacing
+        it; only the user removes a chip."""
+        if not _profile_ready():
+            return RedirectResponse("/", status_code=303)
+        from copilot.resume import extract_resume_profile
+        from copilot.title_suggestions import suggest_target_titles
+
+        current = _parse_lines(titles)
+        with open(profile_path) as f:
+            profile = Profile.model_validate(pyyaml.safe_load(f))
+        try:
+            resume = extract_resume_profile(profile)
+            suggestions = suggest_target_titles(profile, resume)
+        except Exception as exc:  # noqa: BLE001 - shown on the page
+            return HTMLResponse(
+                render_prefs(f'<div class="flash err">Suggest titles failed: {html.escape(str(exc))}</div>', titles=current)
+            )
+        new = [s.title for s in suggestions if s.title not in current]
+        merged = current + new
+        msg = (
+            f"Added {len(new)} new title{'s' if len(new) != 1 else ''} from your resume "
+            f"({len(suggestions) - len(new)} already there) - review below, then Save to keep them."
+        )
+        return HTMLResponse(render_prefs(f'<div class="flash ok">{html.escape(msg)}</div>', titles=merged))
+
+    @app.post("/preferences/suggest-industries")
+    def suggest_industries_route(industry_preference: str = Form("")):
+        """Same pattern as suggest-titles, for Industry preference. Values are
+        always members of the Industry enum (industry.py) - the same closed
+        vocabulary classify_companies() assigns to companies - so a suggested
+        preference can never fail to match a company's industry label. New
+        suggestions are appended after whatever's already there (existing
+        rank is the user's own and isn't reordered), never replacing it."""
+        if not _profile_ready():
+            return RedirectResponse("/", status_code=303)
+        from copilot.industry import suggest_industry_preference
+        from copilot.resume import extract_resume_profile
+
+        current = _parse_lines(industry_preference)
+        with open(profile_path) as f:
+            profile = Profile.model_validate(pyyaml.safe_load(f))
+        try:
+            resume = extract_resume_profile(profile)
+            suggested = suggest_industry_preference(profile, resume.domains)
+        except Exception as exc:  # noqa: BLE001 - shown on the page
+            return HTMLResponse(
+                render_prefs(
+                    f'<div class="flash err">Suggest industries failed: {html.escape(str(exc))}</div>',
+                    industry_preference=current,
+                )
+            )
+        new = [i for i in suggested if i not in current]
+        if not new:
+            reason = "already covered by your current list" if suggested else "nothing in your resume mapped cleanly to a known industry"
+            msg = f'<div class="flash err">No new industries added - {reason}.</div>'
+            return HTMLResponse(render_prefs(msg, industry_preference=current))
+        industries = current + new
+        msg = (
+            f"Added {len(new)} new industr{'y' if len(new) == 1 else 'ies'} from your resume "
+            f"({len(suggested) - len(new)} already there) - review below, then Save to keep them."
+        )
+        return HTMLResponse(
+            render_prefs(f'<div class="flash ok">{html.escape(msg)}</div>', industry_preference=industries)
+        )
 
     @app.post("/save")
     def save(
@@ -558,6 +763,9 @@ def create_app(
     def jobs_list(
         min_fit: str = "", location: str = "", max_age: str | None = None,
         sort: str = "fit", hide_tracked: bool = False, limit: int = 50,
+        remote_only: bool = False, visa: str = "", title: str = "", company: str = "",
+        industry: str = "", salary_floor: str = "", employment_type: str = "",
+        flash: str = "",
     ):
         if not _profile_ready():
             return RedirectResponse("/", status_code=303)
@@ -566,10 +774,14 @@ def create_app(
         profile = Profile.model_validate(raw)
         if sort not in ("fit", "new", "salary"):
             sort = "fit"
+        if visa not in ("", "sponsor", "hide_no"):
+            visa = ""
+        if employment_type not in _EMPLOYMENT_TYPE_BUCKETS:
+            employment_type = ""
 
         # max_age distinguishes "not in the URL at all" (fresh /jobs visit -
         # apply the profile default) from "submitted blank" (user cleared the
-        # field on purpose - no floor), unlike min_fit/location which have no
+        # field on purpose - no floor), unlike the other filters which have no
         # profile-level default to fall back to.
         if max_age is None:
             age_ceiling = profile.search.max_posting_age_days
@@ -577,22 +789,29 @@ def create_app(
             age_ceiling = None
         else:
             age_ceiling = int(max_age)
+        max_age_value = str(age_ceiling) if age_ceiling is not None else ""
+
+        f = {
+            "min_fit": min_fit, "location": location, "age_ceiling": age_ceiling,
+            "max_age_value": max_age_value, "sort": sort, "hide_tracked": hide_tracked,
+            "remote_only": remote_only, "visa": visa, "title": title, "company": company,
+            "industry": industry, "salary_floor": salary_floor, "employment_type": employment_type,
+        }
+        # "More filters" opens by default once any of the fields tucked inside
+        # it are actually driving the results - otherwise a real filter could
+        # be silently narrowing the list behind a collapsed disclosure.
+        more_filters_active = any([
+            title.strip(), company.strip(), industry.strip(), salary_floor.strip(),
+            employment_type, location.strip(),
+            age_ceiling != profile.search.max_posting_age_days,
+        ])
+        filters_active = more_filters_active or bool(
+            min_fit.strip() or sort != "fit" or hide_tracked or remote_only or visa
+        )
 
         engine = get_engine(db_path)
         with get_session(engine) as session:
-            stmt = select(Job)
-            if location.strip():
-                stmt = stmt.where(Job.location.ilike(f"%{location.strip()}%"))
-            if min_fit.strip():
-                floor = int(min_fit)
-                stmt = stmt.where((Job.fit_score.is_(None)) | (Job.fit_score >= floor))
-            if age_ceiling is not None:
-                cutoff = datetime.now(timezone.utc) - timedelta(days=age_ceiling)
-                stmt = stmt.where((Job.posted_at.is_(None)) | (Job.posted_at >= cutoff))
-            if hide_tracked:
-                # Focus on what you haven't acted on yet - drop jobs that
-                # already have an application row.
-                stmt = stmt.where(~Job.application.has())
+            stmt = _apply_job_filters(select(Job), f)
             jobs = session.scalars(stmt).all()
             total = len(jobs)
             scored = sum(1 for j in jobs if j.fit_score is not None)
@@ -604,29 +823,182 @@ def create_app(
             else:
                 ranked = rank_jobs(jobs, profile, Geocoder())
             ranked = ranked[:limit]
-            max_age_value = str(age_ceiling) if age_ceiling is not None else ""
 
             show_more_url = ""
             if len(ranked) >= limit and total > len(ranked):
-                show_more_url = (
-                    f"/jobs?limit={limit + 50}&min_fit={html.escape(min_fit)}"
-                    f"&location={html.escape(location)}&max_age={html.escape(max_age_value)}"
-                    f"&sort={sort}&hide_tracked={'true' if hide_tracked else 'false'}"
-                )
+                show_more_url = "/jobs?" + _jobs_query_string(f, limit=limit + 50)
+
+            from copilot.api_usage import get_jsearch_quota
+
+            unscored_total = session.scalar(
+                select(func.count(Job.id)).where(Job.fit_score.is_(None))
+            )
+            last_searched = session.scalar(select(func.max(Job.created_at)))
+            last_searched_display = last_searched.strftime("%Y-%m-%d") if last_searched else "never"
+
+            jsearch_on = bool(os.environ.get("JSEARCH_API_KEY"))
+            jsearch_quota = get_jsearch_quota()
+            if not jsearch_on:
+                jsearch_note = "not connected"
+            elif jsearch_quota is None:
+                jsearch_note = "quota unknown until the first search"
+            elif jsearch_quota.remaining is not None and jsearch_quota.limit is not None:
+                reset = _format_reset(jsearch_quota.reset_at, datetime.now(timezone.utc))
+                jsearch_note = f"{jsearch_quota.remaining} of {jsearch_quota.limit} JSearch searches left"
+                if reset:
+                    jsearch_note += f" ({reset})"
+            else:
+                jsearch_note = "connected"
+
             body = render(
                 "/jobs",
                 "jobs.html",
                 jobs=ranked,
                 total=total,
                 scored=scored,
+                unscored_total=unscored_total,
                 min_fit=min_fit,
                 location=location,
                 max_age=max_age_value,
                 sort=sort,
                 hide_tracked=hide_tracked,
+                remote_only=remote_only,
+                visa=visa,
+                title_q=title,
+                company=company,
+                industry=industry,
+                salary_floor=salary_floor,
+                employment_type=employment_type,
+                employment_type_options=_EMPLOYMENT_TYPE_BUCKETS,
+                industry_options=[i.value for i in Industry],
+                more_filters_active=more_filters_active,
+                filters_active=filters_active,
                 show_more_url=show_more_url,
+                jsearch_on=jsearch_on,
+                jsearch_note=jsearch_note,
+                last_searched_display=last_searched_display,
+                flash=flash,
             )
         return body
+
+    @app.post("/jobs/search")
+    def jobs_search():
+        """Manual trigger for the same discovery pipeline `copilot discover`
+        runs: every title x location in profile.yaml against every
+        configured source, then ATS resolution, geocoding, and industry
+        classification. Deliberately not chained with scoring (D-something,
+        2026-07-28) - the user asked for the two to stay separate, with
+        scoring controllable independently (count, or one job at a time)."""
+        if not _profile_ready():
+            return RedirectResponse("/", status_code=303)
+        from copilot.discovery.pipeline import (
+            classify_new_companies, geocode_missing_coordinates, resolve_and_poll_ats, run_discovery,
+        )
+
+        with open(profile_path) as f:
+            profile = Profile.model_validate(pyyaml.safe_load(f))
+        adzuna_app_id = os.environ.get("ADZUNA_APP_ID")
+        adzuna_app_key = os.environ.get("ADZUNA_APP_KEY")
+        jsearch_api_key = os.environ.get("JSEARCH_API_KEY")
+        if not (adzuna_app_id and adzuna_app_key) and not jsearch_api_key:
+            msg = ('<div class="flash err">No discovery source configured - add Adzuna or '
+                   'JSearch keys on <a href="/integrations">Integrations</a>.</div>')
+            return HTMLResponse(jobs_list(flash=msg))
+
+        engine = get_engine(db_path)
+        with get_session(engine) as session:
+            try:
+                summary = run_discovery(
+                    profile, session, adzuna_app_id=adzuna_app_id, adzuna_app_key=adzuna_app_key,
+                    jsearch_api_key=jsearch_api_key,
+                )
+            except Exception as exc:  # noqa: BLE001 - shown on the page
+                return HTMLResponse(
+                    jobs_list(flash=f'<div class="flash err">Search failed: {html.escape(str(exc))}</div>')
+                )
+            try:
+                resolve_and_poll_ats(profile, session)
+            except Exception:  # noqa: BLE001 - ATS polling is enrichment, not critical path
+                pass
+            geocode_missing_coordinates(session)
+            try:
+                classify_new_companies(profile, session)
+            except Exception:  # noqa: BLE001 - classification is enrichment, not critical path
+                pass
+
+        parts = [
+            f"Found {summary.found} posting{'s' if summary.found != 1 else ''}",
+            f"{summary.added} new", f"{summary.duplicates} already known",
+        ]
+        if summary.dealbreakers_dropped:
+            parts.append(f"{summary.dealbreakers_dropped} dropped by dealbreakers")
+        msg = ", ".join(parts) + "."
+        if summary.quota_exhausted:
+            msg += (f" {', '.join(summary.quota_exhausted)} hit its usage limit this run - "
+                    "resumes automatically once it resets.")
+        if summary.added:
+            msg += f" {summary.added} new job{'s' if summary.added != 1 else ''} still need scoring."
+        return HTMLResponse(jobs_list(flash=f'<div class="flash ok">{html.escape(msg)}</div>'))
+
+    @app.post("/jobs/score-batch")
+    def jobs_score_batch(count: int = Form(25)):
+        """Bulk-score the next `count` unscored jobs, newest-discovered first -
+        same ordering `copilot score` already uses. Separate action from
+        Search by design: finding jobs is free (aside from JSearch quota),
+        scoring spends real Claude tokens, so the user chooses how much to
+        spend and when."""
+        if not _profile_ready():
+            return RedirectResponse("/", status_code=303)
+        from copilot.resume import extract_resume_profile
+        from copilot.scoring.rubric import score_and_apply
+
+        count = max(1, min(count, 200))
+        with open(profile_path) as f:
+            profile = Profile.model_validate(pyyaml.safe_load(f))
+        engine = get_engine(db_path)
+        with get_session(engine) as session:
+            stmt = (
+                select(Job).where(Job.fit_score.is_(None)).order_by(Job.created_at.desc()).limit(count)
+            )
+            jobs = session.scalars(stmt).all()
+            if not jobs:
+                msg = '<div class="flash err">Nothing to score - every job matching your search already has a fit score.</div>'
+                return HTMLResponse(jobs_list(flash=msg))
+            try:
+                resume = extract_resume_profile(profile)
+                result = score_and_apply(session, profile, resume, jobs)
+            except Exception as exc:  # noqa: BLE001 - shown on the page
+                return HTMLResponse(
+                    jobs_list(flash=f'<div class="flash err">Scoring failed: {html.escape(str(exc))}</div>')
+                )
+        msg = f"Scored {result.scored} job{'s' if result.scored != 1 else ''}."
+        if result.missing:
+            msg += f" {result.missing} got no score back - try Score again to retry."
+        return HTMLResponse(jobs_list(flash=f'<div class="flash ok">{html.escape(msg)}</div>'))
+
+    @app.post("/jobs/{job_id}/score")
+    def job_score_one(job_id: int):
+        """Score exactly one job on demand - for when reviewing the list (or a
+        job's own detail page) turns up something worth a closer look right
+        now, rather than waiting for it to come up in a batch."""
+        from copilot.resume import extract_resume_profile
+        from copilot.scoring.rubric import score_and_apply
+
+        with open(profile_path) as f:
+            profile = Profile.model_validate(pyyaml.safe_load(f))
+        engine = get_engine(db_path)
+        with get_session(engine) as session:
+            job = session.scalar(select(Job).where(Job.id == job_id))
+            if job is None:
+                return HTMLResponse(f"No job with id {job_id}.", status_code=404)
+            try:
+                resume = extract_resume_profile(profile)
+                score_and_apply(session, profile, resume, [job])
+            except Exception as exc:  # noqa: BLE001 - shown on the page
+                return HTMLResponse(
+                    f"Scoring failed: {html.escape(str(exc))}", status_code=500
+                )
+        return RedirectResponse(f"/jobs/{job_id}", status_code=303)
 
     @app.get("/applications", response_class=HTMLResponse)
     def applications_list() -> str:
@@ -801,6 +1173,31 @@ def create_app(
             )
         return RedirectResponse("/integrations", status_code=303)
 
+    @app.post("/integrations/sync-email")
+    def sync_email():
+        """Manual trigger for the same inbox sync the hourly schedule runs
+        (`copilot inbox sync`) - for checking replies right away rather than
+        waiting for the next scheduled pass."""
+        from copilot.email_agent.provider import get_provider
+        from copilot.email_agent.sync import run_sync
+
+        with open(profile_path) as f:
+            profile = Profile.model_validate(pyyaml.safe_load(f))
+        try:
+            provider = get_provider(profile)
+            with get_session(get_engine(db_path)) as session:
+                result = run_sync(session, provider, profile)
+        except Exception as exc:  # noqa: BLE001 - shown on the page
+            return HTMLResponse(
+                render_integrations(f'<div class="flash err">Sync failed: {html.escape(str(exc))}</div>')
+            )
+        handled = result.fetched + result.intake - result.skipped_prefilter - result.skipped_seen
+        msg = f"Synced: {handled} message{'s' if handled != 1 else ''} handled"
+        if result.suggestions or result.conflicts:
+            msg += f", {result.suggestions + result.conflicts} suggestion(s) awaiting your review"
+        msg += "."
+        return HTMLResponse(render_integrations(f'<div class="flash ok">{html.escape(msg)}</div>'))
+
     @app.post("/config/env")
     def config_env(
         ANTHROPIC_API_KEY: str = Form(""),
@@ -925,13 +1322,38 @@ def create_app(
     def integrations() -> str:
         return render_integrations()
 
-    @app.get("/usage", response_class=HTMLResponse)
-    def usage() -> str:
-        from copilot.api_usage import get_jsearch_quota
+    def render_usage(flash: str = "") -> str:
+        from copilot.api_usage import get_anthropic_spend, get_jsearch_quota
         from copilot.setup_status import get_setup_status
 
         graph_check = get_setup_status(profile_path).get("email")
-        metered, free = _usage_rows(get_jsearch_quota(), bool(graph_check and graph_check.ok))
-        return render("/usage", "usage.html", metered=metered, free=free)
+        metered, free = _usage_rows(
+            get_jsearch_quota(), bool(graph_check and graph_check.ok), get_anthropic_spend()
+        )
+        return render("/usage", "usage.html", metered=metered, free=free, flash=flash)
+
+    @app.get("/usage", response_class=HTMLResponse)
+    def usage() -> str:
+        return render_usage()
+
+    @app.post("/usage/refresh-h1b")
+    def usage_refresh_h1b():
+        from copilot.scoring.sponsorship import (
+            h1b_cache_path, refresh_h1b_data, sync_sponsorship_data,
+        )
+
+        try:
+            year, found_newer = refresh_h1b_data()
+        except Exception as exc:  # noqa: BLE001 - shown on the page
+            return HTMLResponse(
+                render_usage(f'<div class="flash err">Refresh failed: {html.escape(str(exc))}</div>')
+            )
+        with get_session(get_engine(db_path)) as session:
+            summary = sync_sponsorship_data(session, cache_path=h1b_cache_path(year), year=year)
+        if found_newer:
+            msg = f"Found and switched to FY{year} data - matched {summary.matched} of {summary.companies_checked} companies."
+        else:
+            msg = f"No newer report published yet - re-verified FY{year} data still current."
+        return HTMLResponse(render_usage(f'<div class="flash ok">{html.escape(msg)}</div>'))
 
     return app

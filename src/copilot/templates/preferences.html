@@ -1,5 +1,12 @@
 {% extends "base.html" %}
 {% block title %}Preferences - Career Copilot{% endblock %}
+
+{% macro chiplist(name, values, placeholder, reorder=False, suggest=None) %}
+<div class="chiplist" data-placeholder="{{ placeholder }}"{% if reorder %} data-reorder="true"{% endif %}{% if suggest %} data-suggest="{{ suggest }}"{% endif %}>
+  <textarea class="chiplist-source" name="{{ name }}" rows="3">{{ values|join('\n') }}</textarea>
+</div>
+{% endmacro %}
+
 {% block content %}
 <div class="page-head">
   <h1>Preferences</h1>
@@ -13,51 +20,77 @@
   <article>
     <h3>What to search for</h3>
     <p class="sub">Discovery queries every title in every location on each
-    <code>copilot discover</code> run.</p>
-    <label>Target titles <span class="hint">one per line</span>
-      <textarea name="titles" rows="4">{{ titles|join('\n') }}</textarea>
-    </label>
-    <label>Search locations <span class="hint">one per line, e.g. "United States"</span>
-      <textarea name="locations" rows="3">{{ locations|join('\n') }}</textarea>
-    </label>
+    <code>copilot discover</code> run - order doesn't matter here.</p>
+
+    <div class="field-row">
+      <label>Target titles</label>
+      <div class="field-actions">
+        <button type="submit" formaction="/preferences/suggest-titles" formmethod="post" formnovalidate
+          class="mini ghost" title="Sends your resume to Claude with a live web search to suggest titles - a real API call, can take a minute or two. Adds to your current list; nothing is removed.">
+          Suggest from resume
+        </button>
+        <button type="button" class="mini ghost" data-clear-target="titles" data-clear-label="Target titles">Clear all</button>
+      </div>
+    </div>
+    {{ chiplist('titles', titles, 'Add a title...', suggest='titles') }}
+
+    <label class="field-label">Search locations</label>
+    {{ chiplist('locations', locations, 'Add a location...', suggest='locations') }}
   </article>
 
   <article>
     <h3>Filters &mdash; drop jobs entirely</h3>
     <p class="sub">Applied at discovery; run <code>copilot jobs prune</code> after
     tightening to re-apply to stored jobs.</p>
-    <label>Salary floor (USD) <span class="hint">jobs with a known salary below this
-    are dropped; jobs that don't state pay are always kept. Blank = no floor.</span>
-      <input name="min_salary" type="number" value="{{ min_salary }}">
-    </label>
-    <label>Dealbreakers <span class="hint">plain English, one per line - e.g.
-    "don't give me jobs based in Alabama", "no clearance jobs", "nothing at Meta".
-    Claude compiles these into precise filters on the next discover/prune.</span>
-      <textarea name="dealbreakers" rows="3">{{ dealbreakers|join('\n') }}</textarea>
-    </label>
+
+    <label>Salary floor</label>
+    <div class="prefixed-input">
+      <span class="prefix">$</span>
+      <input name="min_salary" type="number" value="{{ min_salary }}" placeholder="No floor">
+    </div>
+    <p class="field-hint">Jobs with a known salary below this are dropped; jobs that don't
+    state pay are always kept.</p>
+
+    <label class="field-label">Dealbreakers</label>
+    <p class="field-hint">Plain English, one per line - e.g. "don't give me jobs based in
+    Alabama", "no clearance jobs", "nothing at Meta". Claude compiles these into precise
+    filters on the next discover/prune.</p>
+    <textarea name="dealbreakers" rows="3">{{ dealbreakers|join('\n') }}</textarea>
   </article>
 
   <article>
     <h3>Preferences &mdash; reorder, never hide</h3>
-    <p class="sub">Listings sort by these instantly; unmatched jobs go last but
-    stay visible.</p>
-    <label>Location preference <span class="hint">one per line, most preferred first:
-    "remote", "within 30 miles of Place, ST", or plain location text</span>
-      <textarea name="location_preference" rows="3">{{ location_preference|join('\n') }}</textarea>
-    </label>
-    <label>Industry preference <span class="hint">one per line, most preferred first.
-    Vocabulary: {{ industry_vocab }}</span>
-      <textarea name="industry_preference" rows="3">{{ industry_preference|join('\n') }}</textarea>
-    </label>
-    <label>Company preference <span class="hint">one per line, most preferred first -
-    their listings rank higher and their public job boards (Greenhouse/Lever/Ashby)
-    are watched directly</span>
-      <textarea name="company_preference" rows="3">{{ company_preference|join('\n') }}</textarea>
-    </label>
-    <label>
-      <input type="checkbox" name="deprioritize_staffing" role="switch" {{ 'checked' if staffing_checked }}>
-      Rank direct employers above staffing agencies
-    </label>
+    <p class="sub">Listings sort by these instantly, most preferred first; unmatched jobs
+    go last but stay visible. Drag a row (or use the arrows) to change its rank.</p>
+
+    <label>Location preference</label>
+    <p class="field-hint">"Remote", "within 30 miles of Place, ST", or plain location text.</p>
+    {{ chiplist('location_preference', location_preference, 'Add a location...', reorder=True, suggest='locations') }}
+
+    <div class="field-row">
+      <label class="field-label">Industry preference</label>
+      <div class="field-actions">
+        <button type="submit" formaction="/preferences/suggest-industries" formmethod="post" formnovalidate
+          class="mini ghost" title="Sends your resume's stated domains to Claude to suggest industries from the fixed vocabulary below - a real API call. Adds to your current list; nothing is removed.">
+          Suggest from resume
+        </button>
+        <button type="button" class="mini ghost" data-clear-target="industry_preference" data-clear-label="Industry preference">Clear all</button>
+      </div>
+    </div>
+    <p class="field-hint">Vocabulary: {{ industry_vocab }}.</p>
+    {{ chiplist('industry_preference', industry_preference, 'Add an industry...', reorder=True, suggest='industries') }}
+
+    <label class="field-label">Company preference</label>
+    <p class="field-hint">Ranked companies' listings rank higher, and their public job
+    boards (Greenhouse/Lever/Ashby) are watched directly.</p>
+    {{ chiplist('company_preference', company_preference, 'Add a company...', reorder=True, suggest='companies') }}
+
+    <div class="pref-switch">
+      <label>
+        <input type="checkbox" name="deprioritize_staffing" role="switch" {{ 'checked' if staffing_checked }}>
+        Rank direct employers above staffing agencies
+      </label>
+    </div>
   </article>
 
   <div class="btn-row">
@@ -84,4 +117,8 @@
 
 <p class="footnote">Inbox sync and the hourly background schedule live on the
 <a href="/integrations">Integrations</a> page.</p>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/chiplist.js?v={{ static_v }}"></script>
 {% endblock %}

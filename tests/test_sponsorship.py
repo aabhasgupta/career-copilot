@@ -1,11 +1,17 @@
 from pathlib import Path
 
+import pytest
+
 from copilot.db.models import Company, SponsorshipStatus
 from copilot.scoring.sponsorship import (
+    FISCAL_YEAR,
     FilingStats,
+    current_cached_year,
     load_filings,
     match_company,
     normalize_company_name,
+    probe_newer_year,
+    refresh_h1b_data,
     sync_sponsorship_data,
 )
 
@@ -104,3 +110,84 @@ def test_sync_sponsorship_data_updates_matched_leaves_unmatched_unknown(tmp_path
         unknown = session.query(Company).filter_by(name="A Totally Unknown Startup").one()
         assert unknown.h1b_filing_count is None
         assert unknown.sponsorship_status == SponsorshipStatus.unknown
+
+
+def test_sync_sponsorship_data_labels_evidence_with_explicit_year(tmp_path: Path):
+    from copilot.db import get_engine, get_session, init_db
+
+    csv_path = _write_csv(
+        tmp_path, ['2023,"STRIPE INC",7,0,48,4,52,5600,CA,"SOUTH SAN FRANCISCO",94080\n']
+    )
+    engine = get_engine(tmp_path / "test.db")
+    init_db(engine)
+    with get_session(engine) as session:
+        session.add(Company(name="Stripe"))
+        session.commit()
+        sync_sponsorship_data(session, cache_path=csv_path, year=2025)
+        stripe = session.query(Company).filter_by(name="Stripe").one()
+        assert "FY2025" in stripe.sponsorship_evidence
+
+
+def test_current_cached_year_returns_default_when_nothing_cached(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("copilot.scoring.sponsorship.DATA_DIR", tmp_path)
+    assert current_cached_year() == FISCAL_YEAR
+
+
+def test_current_cached_year_reads_newest_cached_filename(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("copilot.scoring.sponsorship.DATA_DIR", tmp_path)
+    (tmp_path / "h1b_data_hub_fy2023.csv").write_text("x")
+    (tmp_path / "h1b_data_hub_fy2025.csv").write_text("x")
+    (tmp_path / "h1b_data_hub_fy2024.csv").write_text("x")
+    assert current_cached_year() == 2025
+
+
+def test_probe_newer_year_returns_newest_reachable(monkeypatch):
+    reachable = {2025}
+    monkeypatch.setattr(
+        "copilot.scoring.sponsorship._year_is_published", lambda year: year in reachable
+    )
+    monkeypatch.setattr("copilot.scoring.sponsorship.date", _FixedDate)
+    assert probe_newer_year(2023) == 2025
+
+
+def test_probe_newer_year_returns_none_when_nothing_newer(monkeypatch):
+    monkeypatch.setattr("copilot.scoring.sponsorship._year_is_published", lambda year: False)
+    monkeypatch.setattr("copilot.scoring.sponsorship.date", _FixedDate)
+    assert probe_newer_year(2023) is None
+
+
+def test_refresh_h1b_data_downloads_newer_year_when_found(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr("copilot.scoring.sponsorship.DATA_DIR", tmp_path)
+    monkeypatch.setattr("copilot.scoring.sponsorship.probe_newer_year", lambda after_year: 2025)
+    downloaded = {}
+    monkeypatch.setattr(
+        "copilot.scoring.sponsorship.download_data",
+        lambda year, force=False: downloaded.setdefault("call", (year, force)),
+    )
+    year, found_newer = refresh_h1b_data()
+    assert year == 2025
+    assert found_newer is True
+    assert downloaded["call"] == (2025, True)
+
+
+def test_refresh_h1b_data_reverifies_current_year_when_nothing_newer(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr("copilot.scoring.sponsorship.DATA_DIR", tmp_path)
+    (tmp_path / "h1b_data_hub_fy2023.csv").write_text("x")
+    monkeypatch.setattr("copilot.scoring.sponsorship.probe_newer_year", lambda after_year: None)
+    downloaded = {}
+    monkeypatch.setattr(
+        "copilot.scoring.sponsorship.download_data",
+        lambda year, force=False: downloaded.setdefault("call", (year, force)),
+    )
+    year, found_newer = refresh_h1b_data()
+    assert year == 2023
+    assert found_newer is False
+    assert downloaded["call"] == (2023, True)
+
+
+class _FixedDate:
+    @staticmethod
+    def today():
+        import datetime
+
+        return datetime.date(2026, 7, 27)
