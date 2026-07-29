@@ -147,7 +147,11 @@ class Job(Base):
     visa_signal: Mapped[VisaSignal] = mapped_column(
         Enum(VisaSignal), default=VisaSignal.unknown
     )
+    # Phase 5 (docs/DECISIONS.md D43): a distinct question from fit_score -
+    # "will this get a reply" vs "is this a good fit" - so it's a separate
+    # column and a separate sort, not blended into fit_score or rank_jobs.
     response_likelihood_score: Mapped[float | None] = mapped_column(Float)
+    response_likelihood_reasoning: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     company: Mapped[Company] = relationship(back_populates="jobs")

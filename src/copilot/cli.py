@@ -1005,6 +1005,10 @@ def jobs_show(job_id: int) -> None:
         console.print(table)
         console.print(f"[dim]Visa signal from JD: {job.visa_signal.value}[/]")
 
+        if job.response_likelihood_score is not None:
+            console.print(f"\n[bold]Response odds: {job.response_likelihood_score:.0f}/100[/]")
+            console.print(job.response_likelihood_reasoning or "[dim](no reasoning stored)[/]")
+
         if company != "?" and job.company:
             sponsorship = job.company.sponsorship_status.value
             if sponsorship != "unknown" or job.company.sponsorship_evidence:

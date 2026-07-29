@@ -872,6 +872,16 @@ def create_app(
                 ranked = sorted(jobs, key=_posting_sort_key, reverse=True)
             elif sort == "salary":
                 ranked = sorted(jobs, key=lambda j: (j.salary_max or j.salary_min or 0), reverse=True)
+            elif sort == "response":
+                # Its own sort, not blended into fit-based rank_jobs (D43) -
+                # "will this reply" is a different question from "is this a
+                # good fit", and unscored jobs (None) sort last rather than
+                # being assumed average.
+                ranked = sorted(
+                    jobs,
+                    key=lambda j: j.response_likelihood_score if j.response_likelihood_score is not None else -1,
+                    reverse=True,
+                )
             else:
                 ranked = rank_jobs(jobs, profile, Geocoder())
             ranked = ranked[:limit]

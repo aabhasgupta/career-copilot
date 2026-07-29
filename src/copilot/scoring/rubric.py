@@ -8,6 +8,17 @@ visa/sponsorship signal extracted from the JD text in the same call, since
 scoring already reads it - no separate pass needed. Company-level sponsorship
 evidence (public H1B filing data) is a distinct, non-LLM lookup; see
 scoring/sponsorship.py.
+
+Phase 5 (docs/DECISIONS.md D43) piggybacks a second judgment on the same
+call: response_likelihood_score - "will this get a reply", a different
+question from fit_score's "is this a good fit" (a great-fit posting at a
+huge company can still be a long shot; a mediocre-fit niche direct-ATS
+posting can be a good bet). No source reports actual applicant counts, so
+competition is a holistic judgment from posting age, application channel,
+and how generic/prominent the role and company read - not a formula. The
+user's own historical response rate is a deliberately absent input for now:
+with only a handful of tracked applications so far, there isn't enough data
+to calibrate anything real, and guessing would just fabricate confidence.
 """
 
 from __future__ import annotations
@@ -20,9 +31,24 @@ from sqlalchemy.orm import Session
 from copilot import llm
 from copilot.config import Profile
 from copilot.db.models import Job, VisaSignal
+from copilot.formatting import posting_age_days
 from copilot.resume import ResumeProfile
 
 _JD_TEXT_LIMIT = 6000  # characters; keeps batched prompts a sane size
+
+# Direct employer ATS vs a broad-net aggregator/board repost - the same
+# posting is easier to stand out in on the former (docs/DECISIONS.md D43).
+_DIRECT_ATS_SOURCES = {"greenhouse", "lever", "ashby"}
+
+
+def _channel_label(source: str) -> str:
+    if source in _DIRECT_ATS_SOURCES:
+        return "direct employer ATS"
+    if source in ("adzuna", "jsearch"):
+        return "aggregator repost"
+    if source == "email":
+        return "manually tracked (from an inbox email)"
+    return f"job board ({source})"
 
 
 @dataclass
@@ -35,6 +61,8 @@ class JobToScore:
     salary_min: int | None
     salary_max: int | None
     jd_text: str | None
+    source: str = "unknown"
+    posting_age_days: int | None = None
 
 
 class JobScore(BaseModel):
@@ -55,6 +83,22 @@ class JobScore(BaseModel):
     )
     reasoning: str = Field(
         description="2-4 sentences citing specific resume experience vs this JD"
+    )
+    response_likelihood_score: int = Field(
+        ge=0,
+        le=100,
+        description="0-100: how likely a real reply (not necessarily an offer) is, "
+        "independent of fit_score - a great-fit posting at a famous company with "
+        "hundreds of applicants can be a worse bet than a decent-fit niche direct-ATS "
+        "posting. Weigh posting age (fresher = fewer applicants so far), application "
+        "channel (direct employer ATS beats an aggregator repost, which is likely "
+        "cross-posted everywhere), and how generic/prominent the title and company "
+        "are (a common title at a famous company draws the most competition).",
+    )
+    response_likelihood_reasoning: str = Field(
+        description="1-2 sentences naming the specific factors that drove the score "
+        "(e.g. 'fresh direct-ATS posting for a niche title, but a well-known employer "
+        "will still draw volume')"
     )
     visa_signal: VisaSignal = Field(
         description="explicit_yes if the JD states it sponsors/supports work visas, "
@@ -93,6 +137,15 @@ Also extract visa_signal for each job, based ONLY on what the JD explicitly stat
 - explicit_no: JD states US citizenship, security clearance, or "no sponsorship" requirements
 - unknown: JD says nothing either way (the default - most JDs don't mention visas)
 
+Separately, give response_likelihood_score: how likely a real reply is, independent of
+fit_score - this is "will they get back to me", not "should they." No applicant-count data
+exists, so judge competition from what's given for each job: posting age in days (fresher
+postings have had less time to accumulate applicants), channel (a direct employer ATS
+posting is easier to stand out in than an aggregator repost, which is likely cross-posted
+on many boards at once), and how generic or prominent the title/company read (a common
+title at a well-known company draws the most volume; a niche title or a smaller/less
+prominent company draws less). State the specific factors in response_likelihood_reasoning.
+
 CANDIDATE:
 {resume_block}
 
@@ -122,10 +175,12 @@ def _job_block(job: JobToScore) -> str:
     if job.salary_min or job.salary_max:
         salary = f", salary {job.salary_min or '?'}-{job.salary_max or '?'}"
     jd = (job.jd_text or "(no description text available)")[:_JD_TEXT_LIMIT]
+    age = "unknown posting age" if job.posting_age_days is None else f"posted {job.posting_age_days}d ago"
     return (
         f"--- job_id: {job.id} ---\n"
         f"{job.title} at {job.company} | {job.location or 'unknown location'}"
         f"{' (remote)' if job.remote else ''}{salary}\n"
+        f"{age} | via {_channel_label(job.source)}\n"
         f"{jd}"
     )
 
@@ -183,7 +238,8 @@ def score_and_apply(
         JobToScore(
             id=j.id, title=j.title, company=j.company.name if j.company else "?",
             location=j.location, remote=j.remote, salary_min=j.salary_min,
-            salary_max=j.salary_max, jd_text=j.jd_text,
+            salary_max=j.salary_max, jd_text=j.jd_text, source=j.source,
+            posting_age_days=posting_age_days(j),
         )
         for j in jobs
     ]
@@ -199,5 +255,7 @@ def score_and_apply(
         job.domain_fit_score = result.domain_fit_score
         job.location_fit_score = result.location_fit_score
         job.visa_feasibility_score = result.visa_feasibility_score
+        job.response_likelihood_score = result.response_likelihood_score
+        job.response_likelihood_reasoning = result.response_likelihood_reasoning
     session.commit()
     return ScoreRunResult(scored=len(scores), missing=len(jobs) - len(scores))

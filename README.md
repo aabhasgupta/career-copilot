@@ -61,11 +61,13 @@ Changed your rules? `uv run copilot jobs prune` re-applies them to everything al
 Prefer forms over YAML? `uv run copilot dashboard` serves a local web page
 (localhost only) for editing all of the above, with validation before every
 save and the file's comments preserved. The same dashboard also has a **Jobs**
-tab - a browsable, filterable table of every job (best fit first) with a
-click-through detail view for the full fit breakdown and sponsorship evidence,
-so you don't have to piece it together one `jobs show <id>` at a time, plus
-Queue/Mark-applied/Set-state buttons on each job's detail page - answering
-"what should I apply to?" A separate **Applications** tab answers "where does
+tab - a browsable, filterable table of every job (best fit first, or sorted
+by newest/salary/**response odds** - a separate score from fit, see "Scoring
+fit" below) with a click-through detail view for the full fit breakdown and
+sponsorship evidence, so you don't have to piece it together one
+`jobs show <id>` at a time, plus Queue/Mark-applied/Set-state buttons on each
+job's detail page - answering "what should I apply to?" A separate
+**Applications** tab answers "where does
 everything stand?": a "Needs attention" strip surfaces interview/OA emails you
 haven't acted on yet and applications stuck in "applied" for 21+ days with no
 activity, above the pipeline grouped into Active/Waiting/Closed (most recent
@@ -99,6 +101,15 @@ only shows the overall score to stay readable; the breakdown lives in `jobs show
 is the model's own holistic judgment, not an average of the five dimensions. Scoring is batched
 (several jobs share one Claude call, since the resume is common context) and only ever touches
 unscored jobs, so re-running is always cheap and safe.
+
+The same call also produces a `response_likelihood_score` - a deliberately different question
+from fit ("will this get a reply" vs "is this a good fit"): a great-fit posting at a famous
+company can be a worse bet than a decent-fit niche direct-ATS one. It's judged from posting age,
+application channel (direct employer ATS vs an aggregator repost), and how generic/prominent the
+role and company read, since no job source reports actual applicant counts. It's shown in
+`jobs show` and as its own dashboard sort option, never blended into the default fit-based
+ranking. Your own reply history isn't factored in yet - there isn't remotely enough tracked-application
+data to calibrate that honestly, so it's left out rather than faked.
 
 ## Sponsorship research
 

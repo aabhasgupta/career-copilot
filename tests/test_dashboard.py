@@ -231,6 +231,24 @@ def test_jobs_sort_newest_orders_by_posting_date(tmp_path: Path):
     assert page.index("Fresh Job") < page.index("Stale Job") < page.index("Unknown Age Job")
 
 
+def test_jobs_sort_response_orders_scored_before_unscored(tmp_path: Path):
+    from sqlalchemy import select as sa_select
+
+    from copilot.db import get_engine, get_session
+    from copilot.db.models import Job
+
+    client = _client_with_db(tmp_path)
+    with get_session(get_engine(tmp_path / "test.db")) as session:
+        ml_job = session.scalars(sa_select(Job).where(Job.title == "ML Engineer")).one()
+        ml_job.response_likelihood_score = 40
+        ml_job.response_likelihood_reasoning = "Aggregator repost, well-known employer."
+        session.commit()
+
+    page = client.get("/jobs", params={"sort": "response"}).text
+    # Scored (40) sorts ahead of unscored (None treated as lowest, not average)
+    assert page.index("ML Engineer") < page.index("Backend Engineer")
+
+
 def test_jobs_list_min_fit_filter_keeps_unscored(tmp_path: Path):
     client = _client_with_db(tmp_path)
     resp = client.get("/jobs", params={"min_fit": "50"})
@@ -267,6 +285,35 @@ def test_job_detail_shows_dimension_breakdown_and_sponsorship(tmp_path: Path):
     assert "90/100" in resp.text  # location_fit_score
     assert "sponsors" in resp.text
     assert "64 H1B petitions approved" in resp.text
+
+
+def test_job_detail_shows_response_likelihood_when_scored(tmp_path: Path):
+    from sqlalchemy import select as sa_select
+
+    from copilot.db import get_engine, get_session
+    from copilot.db.models import Job
+
+    client = _client_with_db(tmp_path)
+    with get_session(get_engine(tmp_path / "test.db")) as session:
+        ml_job = session.scalars(sa_select(Job).where(Job.title == "ML Engineer")).one()
+        ml_job.response_likelihood_score = 72
+        ml_job.response_likelihood_reasoning = "Fresh direct-ATS posting for a niche title."
+        job_id = ml_job.id
+        session.commit()
+
+    resp = client.get(f"/jobs/{job_id}")
+    assert "Response odds: 72/100" in resp.text
+    assert "Fresh direct-ATS posting for a niche title." in resp.text
+
+
+def test_job_detail_shows_not_scored_yet_for_response_likelihood(tmp_path: Path):
+    client = _client_with_db(tmp_path)
+    list_resp = client.get("/jobs")
+    job_id = _first_job_id(list_resp.text)  # ML Engineer: fit scored, response likelihood not
+
+    resp = client.get(f"/jobs/{job_id}")
+    assert "Response odds</h3>" in resp.text
+    assert "Not scored yet - re-score this job to fill this in." in resp.text
 
 
 def test_job_detail_404_for_missing_job(tmp_path: Path):

@@ -67,6 +67,19 @@
   </table>
   <p class="sub">Visa signal from this JD: {{ job.visa_signal.value }}</p>
 </article>
+
+<article>
+  <h3>Response odds{{ ": %.0f/100"|format(job.response_likelihood_score) if job.response_likelihood_score is not none else "" }}</h3>
+  {% if job.response_likelihood_score is not none %}
+  <p>{{ job.response_likelihood_reasoning or "" }}</p>
+  {% else %}
+  <p class="sub">Not scored yet - re-score this job to fill this in.</p>
+  {% endif %}
+  <p class="footnote">A different question from fit above: how likely a reply is, not
+  how good a match this is - judged from posting age, application channel, and how
+  generic/prominent the role and company read. Not the same as fit, and not blended
+  into it.</p>
+</article>
 {% endif %}
 
 {% if sponsorship %}

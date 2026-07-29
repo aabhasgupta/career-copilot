@@ -72,6 +72,27 @@ def test_job_block_handles_missing_jd_text():
     block = _job_block(job)
     assert "no description text available" in block
     assert "unknown location" in block
+    assert "unknown posting age" in block  # default, unset in this test
+
+
+def test_job_block_includes_posting_age_and_channel():
+    job = JobToScore(
+        id=1, title="Engineer", company="Acme", location=None, remote=None,
+        salary_min=None, salary_max=None, jd_text=None,
+        source="greenhouse", posting_age_days=3,
+    )
+    block = _job_block(job)
+    assert "posted 3d ago" in block
+    assert "direct employer ATS" in block
+
+
+def test_job_block_labels_aggregator_and_unknown_channels():
+    from copilot.scoring.rubric import _channel_label
+
+    assert _channel_label("jsearch") == "aggregator repost"
+    assert _channel_label("adzuna") == "aggregator repost"
+    assert _channel_label("greenhouse") == "direct employer ATS"
+    assert _channel_label("remotive") == "job board (remotive)"
 
 
 def make_profile() -> Profile:
@@ -110,6 +131,7 @@ def test_score_and_apply_writes_all_dimensions_and_commits(tmp_path: Path):
                     job_id=job.id, skill_match_score=80, experience_level_score=70,
                     domain_fit_score=60, location_fit_score=90, visa_feasibility_score=50,
                     fit_score=75, reasoning="Strong match.", visa_signal="unknown",
+                    response_likelihood_score=65, response_likelihood_reasoning="Fresh direct-ATS posting.",
                 )
             ])
             result = score_and_apply(session, make_profile(), RESUME, [job])
@@ -120,6 +142,8 @@ def test_score_and_apply_writes_all_dimensions_and_commits(tmp_path: Path):
         assert job.fit_reasoning == "Strong match."
         assert job.skill_match_score == 80
         assert job.visa_feasibility_score == 50
+        assert job.response_likelihood_score == 65
+        assert job.response_likelihood_reasoning == "Fresh direct-ATS posting."
 
     # Committed for real - a fresh session sees the same values.
     with get_session(engine) as session2:
@@ -147,6 +171,7 @@ def test_score_and_apply_reports_missing_when_model_skips_a_job(tmp_path: Path):
                     job_id=j1.id, skill_match_score=1, experience_level_score=1,
                     domain_fit_score=1, location_fit_score=1, visa_feasibility_score=1,
                     fit_score=1, reasoning="x", visa_signal="unknown",
+                    response_likelihood_score=1, response_likelihood_reasoning="x",
                 )
                 # j2 deliberately absent - model didn't return a score for it.
             ])
