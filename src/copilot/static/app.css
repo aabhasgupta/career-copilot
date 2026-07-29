@@ -297,6 +297,30 @@ details > summary { cursor: pointer; font-weight: 650; }
 .showmore { display: inline-block; margin-top: .8rem; font-size: .9rem; }
 .hint { font-weight: 400; color: var(--pico-muted-color); font-size: .82rem; }
 
+/* ---- Applications tab: needs-attention strip, state groups, timeline ----
+   Attention items still appear again in their normal group below - the
+   strip is a nudge, not a filter, so counts elsewhere stay honest. */
+.attention { border-left: 3px solid var(--cc-accent); background: #eef0fb; }
+.attention h3 { margin-top: 0; }
+/* Pico sets li{list-style:square} directly on the element, which beats an
+   inherited list-style:none from the parent ul (a rule on the element
+   itself always wins over inheritance, specificity aside) - so list-style
+   has to be reset on the li, not just the ul. */
+.attention-list { margin: 0; padding: 0; display: flex; flex-direction: column; gap: .5rem; }
+.attention-list li { list-style: none; font-size: .92rem; }
+
+.timeline li { list-style: none; }
+
+.closed-group summary .hint { margin-left: .3rem; }
+
+.timeline { list-style: none; margin: 0; padding: 0; display: flex;
+  flex-direction: column; gap: .6rem; }
+.timeline-item { font-size: .9rem; border-left: 2px solid var(--pico-card-border-color);
+  padding-left: .8rem; }
+.timeline-item.email-item summary { font-weight: 500; cursor: pointer; }
+.timeline-dt { color: var(--pico-muted-color); font-size: .8rem; margin-right: .6rem;
+  white-space: nowrap; }
+
 /* Compact secondary buttons inside rows */
 .btn-row button, .btn-row .button { margin: 0; }
 form.inline { margin: 0; display: inline; }

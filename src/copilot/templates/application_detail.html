@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}{{ job.title }} - Career Copilot{% endblock %}
+{% block content %}
+<a class="backlink" href="/applications">&larr; Back to applications</a>
+
+<article>
+  <h2>{{ job.title }}</h2>
+  <p class="sub">{{ company.name }} &middot; {{ job.location or "unknown location" }}</p>
+  <div class="btn-row">
+    {{ state_badge(application.state) }}
+    <span class="sub">applied {{ application.applied_at.strftime("%Y-%m-%d") if application.applied_at else "-" }}</span>
+  </div>
+  <p><a href="/jobs/{{ job.id }}">View original posting &rarr;</a></p>
+</article>
+
+<article>
+  <h3>Note</h3>
+  <form method="post" action="/applications/{{ application.id }}/note">
+    <textarea name="note" rows="3"
+      placeholder="Anything worth remembering about this one...">{{ application.notes or "" }}</textarea>
+    <button type="submit" class="secondary">Save note</button>
+  </form>
+</article>
+
+<article>
+  <h3>Status</h3>
+  <div class="btn-row">
+    <form method="post" action="/applications/{{ application.id }}/set-state" class="inline">
+      <select name="state">
+        {% for s in states %}<option value="{{ s }}"{{ ' selected' if s == application.state.value }}>{{ s }}</option>{% endfor %}
+      </select>
+      <button type="submit" class="secondary">Set state</button>
+    </form>
+    <form method="post" action="/applications/{{ application.id }}/untrack" class="inline"
+      onsubmit="return confirm('Remove all tracking for this job? This deletes its application, state history, and email records.')">
+      <button type="submit" class="secondary">Untrack</button>
+    </form>
+  </div>
+  <p class="footnote">"Set state" is the manual override for anything the email agent
+  missed, and can move in any direction - including undoing a wrong state. "Untrack"
+  removes the application entirely (state history and email records included) - the
+  undo for tracking something by mistake.</p>
+</article>
+
+<article>
+  <h3>Timeline</h3>
+  {% if not timeline %}
+  <p class="sub">No history yet.</p>
+  {% else %}
+  <ul class="timeline">
+    {% for item in timeline %}
+    {% if item.kind == "state" %}
+    <li class="timeline-item state-item">
+      <span class="timeline-dt">{{ item.dt.strftime("%Y-%m-%d %H:%M") if item.dt else "-" }}</span>
+      <span>{{ item.text }}</span>
+    </li>
+    {% else %}
+    <li class="timeline-item email-item">
+      <details>
+        <summary>
+          <span class="timeline-dt">{{ item.dt.strftime("%Y-%m-%d %H:%M") if item.dt else "-" }}</span>
+          {{ item.type_label }} email{{ (" from " + item.sender) if item.sender else "" }}{{ (" - " + item.subject) if item.subject else "" }}
+        </summary>
+        <div class="jd">{{ item.body or "(no body stored)" }}</div>
+      </details>
+    </li>
+    {% endif %}
+    {% endfor %}
+  </ul>
+  {% endif %}
+</article>
+{% endblock %}

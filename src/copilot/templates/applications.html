@@ -4,34 +4,72 @@
 <div class="page-head">
   <h1>Applications</h1>
   <p>Where every role you're pursuing stands. States advance automatically from inbox
-  replies; corrections are always yours (set-state / untrack on the job's page).</p>
+  replies; corrections are always yours. Click a role for its full timeline.</p>
 </div>
 
-{% if not rows %}
+{% if not total %}
 <article>
   <p class="sub">Nothing tracked yet. Queue or mark a job applied (Jobs tab), confirm
   an inbox suggestion, or let a company's reply be picked up by
   <code>copilot inbox sync</code>.</p>
 </article>
 {% else %}
-<article>
-  <p class="sub">{{ rows|length }} tracked, most active first.</p>
-  <div class="tablewrap">
-    <table class="jobs">
-      <thead><tr><th>State</th><th>Role</th><th>Company</th><th>Applied</th><th>Last activity</th></tr></thead>
-      <tbody>
-        {% for application, job, company, last_activity in rows %}
-        <tr>
-          <td>{{ state_badge(application.state) }}</td>
-          <td><a href="/jobs/{{ job.id }}">{{ job.title }}</a></td>
-          <td>{{ company.name }}</td>
-          <td>{{ application.applied_at.strftime("%Y-%m-%d") if application.applied_at else "-" }}</td>
-          <td>{{ last_activity.strftime("%Y-%m-%d") if last_activity else "-" }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
+
+{% if attention %}
+<article class="attention">
+  <h3>Needs attention</h3>
+  <ul class="attention-list">
+    {% for application, job, company, note, last_dt in attention %}
+    <li>
+      <a href="/applications/{{ application.id }}">{{ job.title }}</a> at {{ company.name }}
+      <span class="sub">&middot; {{ note }}</span>
+    </li>
+    {% endfor %}
+  </ul>
 </article>
+{% endif %}
+
+{% macro app_table(rows) %}
+<div class="tablewrap">
+  <table class="jobs">
+    <thead><tr><th>State</th><th>Role</th><th>Company</th><th>Applied</th><th>Last activity</th></tr></thead>
+    <tbody>
+      {% for application, job, company, last_dt, last_text in rows %}
+      <tr>
+        <td>{{ state_badge(application.state) }}</td>
+        <td><a href="/applications/{{ application.id }}">{{ job.title }}</a></td>
+        <td>{{ company.name }}</td>
+        <td>{{ application.applied_at.strftime("%Y-%m-%d") if application.applied_at else "-" }}</td>
+        <td>{{ last_text }}{{ (" · " + last_dt.strftime("%Y-%m-%d")) if last_dt else "" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endmacro %}
+
+{% if groups.active %}
+<article>
+  <h3>Active <span class="hint">({{ groups.active|length }})</span></h3>
+  {{ app_table(groups.active) }}
+</article>
+{% endif %}
+
+{% if groups.waiting %}
+<article>
+  <h3>Waiting <span class="hint">({{ groups.waiting|length }})</span></h3>
+  {{ app_table(groups.waiting) }}
+</article>
+{% endif %}
+
+{% if groups.closed %}
+<article>
+  <details class="closed-group">
+    <summary>Closed <span class="hint">({{ groups.closed|length }})</span></summary>
+    {{ app_table(groups.closed) }}
+  </details>
+</article>
+{% endif %}
+
 {% endif %}
 {% endblock %}

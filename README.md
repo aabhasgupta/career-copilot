@@ -64,20 +64,25 @@ save and the file's comments preserved. The same dashboard also has a **Jobs**
 tab - a browsable, filterable table of every job (best fit first) with a
 click-through detail view for the full fit breakdown and sponsorship evidence,
 so you don't have to piece it together one `jobs show <id>` at a time, plus
-Queue/Mark-applied/Set-state buttons on each job's detail page. A separate
-**Applications** tab is the pipeline view - every job you're tracking, most
-active first (interviewing/offer above applied/queued above rejected), with
-applied and last-activity dates - answering "where does everything stand?"
-The **Integrations** tab is the control panel for everything Career Copilot
-connects to - upload/replace your resume, set or update each API key (written
-to `.env` and applied immediately, no restart), and install/pause/resume the
-background sync, all as compact status rows that expand inline when there's
-something to edit. **API usage** is the read-only companion - what each
-external service is for, whether it's connected, and known quota (a real
-"N of 200 left" for JSearch, captured opportunistically from its own response
-headers; an honest "no fixed quota" for the rest rather than a fabricated
-number).
-while the Jobs tab answers "what should I apply to?".
+Queue/Mark-applied/Set-state buttons on each job's detail page - answering
+"what should I apply to?" A separate **Applications** tab answers "where does
+everything stand?": a "Needs attention" strip surfaces interview/OA emails you
+haven't acted on yet and applications stuck in "applied" for 21+ days with no
+activity, above the pipeline grouped into Active/Waiting/Closed (most recent
+activity first within each group, Closed collapsed by default). Click through
+to an application's own page for a header card (state, applied date, an
+editable note, a link back to the original posting) and a full timeline
+merging state history with inbox emails - each email expandable to its full
+body - so "why does this say interviewing?" always has an answer, plus the
+same Set-state/Untrack actions inline. The **Integrations** tab is the control
+panel for everything Career Copilot connects to - upload/replace your resume,
+set or update each API key (written to `.env` and applied immediately, no
+restart), and install/pause/resume the background sync, all as compact status
+rows that expand inline when there's something to edit. **API usage** is the
+read-only companion - what each external service is for, whether it's
+connected, and known quota (a real "N of 200 left" for JSearch, captured
+opportunistically from its own response headers; an honest "no fixed quota"
+for the rest rather than a fabricated number).
 
 ## Scoring fit
 

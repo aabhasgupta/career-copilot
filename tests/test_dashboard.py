@@ -486,8 +486,184 @@ def test_applications_tab_lists_tracked_by_activity(tmp_path: Path):
 
     page = client.get("/applications").text
     assert "Applications" in page
-    # interviewing (state_order 0) must appear before applied (state_order 3)
+    # interviewing lands in the Active group, which renders above Waiting
     assert page.index("interviewing") < page.index("applied")
+
+
+def _email_event(application_id: int, event_type, **overrides):
+    from datetime import datetime, timezone
+
+    from copilot.db.models import EmailEvent
+
+    fields = dict(
+        application_id=application_id,
+        provider_message_id=overrides.pop("provider_message_id", "m1"),
+        provider_thread_id="t1",
+        classified_type=event_type,
+        sender="recruiter@stripe.com",
+        subject="Next steps",
+        body_text="We would like to move forward - please pick a time.",
+        received_at=datetime.now(timezone.utc),
+    )
+    fields.update(overrides)
+    return EmailEvent(**fields)
+
+
+def _application_id_for_job(tmp_path: Path, job_id: str) -> int:
+    from sqlalchemy import select as sa_select
+
+    from copilot.db import get_engine, get_session
+    from copilot.db.models import Application
+
+    with get_session(get_engine(tmp_path / "test.db")) as session:
+        return session.execute(
+            sa_select(Application.id).where(Application.job_id == int(job_id))
+        ).scalar_one()
+
+
+def test_application_detail_shows_timeline_with_expandable_email(tmp_path: Path):
+    from copilot.db import get_engine, get_session
+    from copilot.db.models import EmailEventType
+
+    client = _client_with_db(tmp_path)
+    job_id = _first_job_id(client.get("/jobs").text)
+    client.post(f"/jobs/{job_id}/set-state", data={"state": "interviewing"}, follow_redirects=False)
+    application_id = _application_id_for_job(tmp_path, job_id)
+
+    with get_session(get_engine(tmp_path / "test.db")) as session:
+        session.add(_email_event(application_id, EmailEventType.interview_invite))
+        session.commit()
+
+    detail = client.get(f"/applications/{application_id}").text
+    assert "You set state to interviewing" in detail  # state_history row, source=manual
+    assert "Interview invite email" in detail
+    assert "Next steps" in detail  # subject shown in the (collapsed) summary
+    assert "We would like to move forward" in detail  # full body inside <details>
+    # timeline is newest-first: the email (just added) precedes the earlier state row
+    assert detail.index("Interview invite email") < detail.index("You set state to interviewing")
+
+
+def test_application_note_persists_and_shows_on_reload(tmp_path: Path):
+    client = _client_with_db(tmp_path)
+    job_id = _first_job_id(client.get("/jobs").text)
+    client.post(f"/jobs/{job_id}/set-state", data={"state": "applied"}, follow_redirects=False)
+    application_id = _application_id_for_job(tmp_path, job_id)
+
+    resp = client.post(
+        f"/applications/{application_id}/note",
+        data={"note": "Referred by a former colleague."},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert resp.headers["location"] == f"/applications/{application_id}"
+
+    detail = client.get(f"/applications/{application_id}").text
+    assert "Referred by a former colleague." in detail
+
+
+def test_application_set_state_from_detail_page(tmp_path: Path):
+    client = _client_with_db(tmp_path)
+    job_id = _first_job_id(client.get("/jobs").text)
+    client.post(f"/jobs/{job_id}/set-state", data={"state": "applied"}, follow_redirects=False)
+    application_id = _application_id_for_job(tmp_path, job_id)
+
+    resp = client.post(
+        f"/applications/{application_id}/set-state",
+        data={"state": "interviewing"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert resp.headers["location"] == f"/applications/{application_id}"
+    assert 'class="state">interviewing' in client.get(f"/applications/{application_id}").text
+
+
+def test_application_untrack_from_detail_redirects_to_list(tmp_path: Path):
+    client = _client_with_db(tmp_path)
+    job_id = _first_job_id(client.get("/jobs").text)
+    client.post(f"/jobs/{job_id}/set-state", data={"state": "applied"}, follow_redirects=False)
+    application_id = _application_id_for_job(tmp_path, job_id)
+
+    resp = client.post(f"/applications/{application_id}/untrack", follow_redirects=False)
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/applications"
+    assert client.get(f"/applications/{application_id}").status_code == 404
+
+
+def test_application_detail_404_for_unknown_id(tmp_path: Path):
+    client = _client_with_db(tmp_path)
+    assert client.get("/applications/9999").status_code == 404
+
+
+def test_needs_attention_flags_unacted_interview_invite_and_clears_on_note(tmp_path: Path):
+    from copilot.db import get_engine, get_session
+    from copilot.db.models import EmailEventType
+
+    client = _client_with_db(tmp_path)
+    job_id = _first_job_id(client.get("/jobs").text)
+    client.post(f"/jobs/{job_id}/set-state", data={"state": "interviewing"}, follow_redirects=False)
+    application_id = _application_id_for_job(tmp_path, job_id)
+
+    with get_session(get_engine(tmp_path / "test.db")) as session:
+        session.add(_email_event(application_id, EmailEventType.online_assessment))
+        session.commit()
+
+    flagged = client.get("/applications").text
+    assert "Needs attention" in flagged
+    assert "Online assessment email" in flagged
+
+    client.post(f"/applications/{application_id}/note", data={"note": "Scheduled for Friday."})
+    cleared = client.get("/applications").text
+    assert "Needs attention" not in cleared  # a logged note counts as acted-on
+
+
+def test_needs_attention_flags_stale_applied_but_not_fresh(tmp_path: Path):
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import select as sa_select
+
+    from copilot.db import get_engine, get_session
+    from copilot.db.models import Application, ApplicationStateEvent
+
+    client = _client_with_db(tmp_path)
+    job_id = _first_job_id(client.get("/jobs").text)
+    client.post(f"/jobs/{job_id}/set-state", data={"state": "applied"}, follow_redirects=False)
+
+    fresh = client.get("/applications").text
+    assert "Needs attention" not in fresh  # just applied, nothing stale yet
+
+    with get_session(get_engine(tmp_path / "test.db")) as session:
+        application_id = session.execute(
+            sa_select(Application.id).where(Application.job_id == int(job_id))
+        ).scalar_one()
+        backdated = datetime.now(timezone.utc) - timedelta(days=25)
+        session.execute(
+            ApplicationStateEvent.__table__.update()
+            .where(ApplicationStateEvent.application_id == application_id)
+            .values(created_at=backdated)
+        )
+        session.commit()
+
+    stale = client.get("/applications").text
+    assert "Needs attention" in stale
+    assert "No activity in 25 days" in stale
+
+
+def test_applications_grouped_active_waiting_closed(tmp_path: Path):
+    client = _client_with_db(tmp_path)
+    list_resp = client.get("/jobs")
+    match = re.findall(r'/jobs/(\d+)"', list_resp.text)
+    job_ids = sorted(set(match), key=int)
+    assert len(job_ids) >= 2
+
+    client.post(f"/jobs/{job_ids[0]}/set-state", data={"state": "interviewing"}, follow_redirects=False)
+    client.post(f"/jobs/{job_ids[1]}/set-state", data={"state": "rejected"}, follow_redirects=False)
+
+    page = client.get("/applications").text
+    assert "Active" in page
+    assert "Closed" in page
+    # the closed group is collapsed by default, not shown open
+    assert '<details class="closed-group">' in page
+    assert "<details class=\"closed-group\" open>" not in page
 
 
 def test_jobs_tab_shows_state_badge_not_apply_for_tracked(tmp_path: Path):

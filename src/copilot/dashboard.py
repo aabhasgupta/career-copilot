@@ -52,7 +52,17 @@ from sqlalchemy import func, select
 
 from copilot.config import Profile
 from copilot.db import get_engine, get_session, init_db
-from copilot.db.models import Application, ApplicationState, Company, Job, SponsorshipStatus, VisaSignal
+from copilot.db.models import (
+    Application,
+    ApplicationState,
+    ApplicationStateEvent,
+    Company,
+    EmailEvent,
+    EmailEventType,
+    Job,
+    SponsorshipStatus,
+    VisaSignal,
+)
 from copilot.formatting import format_posted, format_salary
 from copilot.geocode import Geocoder
 from copilot.industry import Industry
@@ -63,15 +73,24 @@ _TEMPLATES_DIR = Path(__file__).parent / "templates"
 _STATIC_DIR = Path(__file__).parent / "static"
 
 # An "applied" application with no activity for this long is a nudge candidate
-# on the Home command center (deterministic staleness, zero-LLM).
+# on the Home command center and the Applications "needs attention" strip
+# (deterministic staleness, zero-LLM).
 _STALE_APPLIED_DAYS = 21
 
 
-def _age_days(dt: datetime | None, now: datetime) -> int | None:
+def _tz(dt: datetime | None) -> datetime | None:
+    """SQLite/SQLAlchemy can hand back naive datetimes even for a
+    DateTime(timezone=True) column - normalize to UTC before any comparison
+    across the state_history/email_events tables."""
     if dt is None:
         return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _age_days(dt: datetime | None, now: datetime) -> int | None:
+    dt = _tz(dt)
+    if dt is None:
+        return None
     return (now - dt).days
 
 
@@ -131,6 +150,39 @@ def _state_badge(state: ApplicationState) -> Markup:
     elif state == ApplicationState.offer:
         cls += " won"
     return Markup(f'<span class="{cls}">{state.value}</span>')
+
+
+_EMAIL_TYPE_LABEL = {
+    EmailEventType.rejection: "Rejection",
+    EmailEventType.interview_invite: "Interview invite",
+    EmailEventType.online_assessment: "Online assessment",
+    EmailEventType.recruiter_screen: "Recruiter screen",
+    EmailEventType.confirmation: "Confirmation",
+    EmailEventType.other: "Other",
+}
+
+
+def _last_activity(
+    state_events: list[ApplicationStateEvent],
+    emails: list[EmailEvent],
+    applied_at: datetime | None,
+) -> tuple[datetime | None, str]:
+    """What actually happened most recently, not just when (Applications tab
+    redesign). state_history and email_events are compared by timestamp and
+    the more recent one's text wins; an email and the state-advance it causes
+    land at essentially the same instant, so on a tie the email's more
+    specific label ("Rejection email" over "Marked rejected") is preferred."""
+    last_state = state_events[-1] if state_events else None
+    last_email = emails[-1] if emails else None
+    state_dt = _tz(last_state.created_at) if last_state else None
+    email_dt = _tz(last_email.received_at) if last_email else None
+    if email_dt is not None and (state_dt is None or email_dt >= state_dt):
+        return email_dt, f"{_EMAIL_TYPE_LABEL[last_email.classified_type]} email"
+    if state_dt is not None:
+        return state_dt, f"Marked {last_state.to_state.value}"
+    if applied_at is not None:
+        return _tz(applied_at), "Applied"
+    return None, "-"
 
 
 def _parse_lines(raw: str) -> list[str]:
@@ -1000,46 +1052,189 @@ def create_app(
                 )
         return RedirectResponse(f"/jobs/{job_id}", status_code=303)
 
+    _ACTIVE_STATES = {ApplicationState.interviewing, ApplicationState.offer, ApplicationState.replied}
+    _CLOSED_STATES = {ApplicationState.rejected, ApplicationState.ghosted}
+
     @app.get("/applications", response_class=HTMLResponse)
     def applications_list() -> str:
-        from copilot.db.models import ApplicationStateEvent
-
-        state_order = {
-            ApplicationState.interviewing: 0,
-            ApplicationState.offer: 1,
-            ApplicationState.replied: 2,
-            ApplicationState.applied: 3,
-            ApplicationState.queued: 4,
-            ApplicationState.found: 5,
-            ApplicationState.rejected: 6,
-            ApplicationState.ghosted: 7,
-        }
+        now = datetime.now(timezone.utc)
         with get_session(get_engine(db_path)) as session:
             rows = session.execute(
                 select(Application, Job, Company)
                 .join(Job, Application.job_id == Job.id)
                 .join(Company, Job.company_id == Company.id)
             ).all()
-            last_activity = dict(
-                session.execute(
-                    select(
-                        ApplicationStateEvent.application_id,
-                        func.max(ApplicationStateEvent.created_at),
-                    ).group_by(ApplicationStateEvent.application_id)
-                ).all()
-            )
-            enriched = [
-                (application, job, company, last_activity.get(application.id))
-                for application, job, company in rows
-            ]
-            enriched.sort(
-                key=lambda r: (
-                    state_order.get(r[0].state, 9),
-                    -(r[3].timestamp() if r[3] is not None else 0),
+            app_ids = [application.id for application, _, _ in rows]
+
+            state_events_by_app: dict[int, list[ApplicationStateEvent]] = {aid: [] for aid in app_ids}
+            for event in session.scalars(
+                select(ApplicationStateEvent)
+                .where(ApplicationStateEvent.application_id.in_(app_ids))
+                .order_by(ApplicationStateEvent.created_at)
+            ):
+                state_events_by_app[event.application_id].append(event)
+
+            email_events_by_app: dict[int, list[EmailEvent]] = {aid: [] for aid in app_ids}
+            for event in session.scalars(
+                select(EmailEvent)
+                .where(EmailEvent.application_id.in_(app_ids))
+                .order_by(EmailEvent.received_at)
+            ):
+                email_events_by_app[event.application_id].append(event)
+
+            enriched = []
+            for application, job, company in rows:
+                last_dt, last_text = _last_activity(
+                    state_events_by_app[application.id],
+                    email_events_by_app[application.id],
+                    application.applied_at,
                 )
+                enriched.append((application, job, company, last_dt, last_text))
+            # Recency within each group is all that's asked for (docs/PLAN.md) -
+            # sort once here, then a stable append below keeps each group's
+            # own slice in the same order.
+            enriched.sort(key=lambda r: r[3].timestamp() if r[3] is not None else 0, reverse=True)
+
+            # "Needs attention" (deterministic, zero-LLM): an interviewing
+            # application whose most recent event - full stop, not just the
+            # most recent email - is an interview-invite or online-assessment
+            # email, with no note logged since. Checking last_text (from
+            # _last_activity, which already picks the more recent of state
+            # vs. email) rather than the raw email list matters: a manual
+            # state change after the email is itself an action, and without
+            # this check a stale old invite would keep flagging an
+            # application the user has since moved on from by hand - caught
+            # live against the real DB, where exactly this case showed up.
+            _UNACTED_EMAIL_LABELS = (
+                _EMAIL_TYPE_LABEL[EmailEventType.interview_invite] + " email",
+                _EMAIL_TYPE_LABEL[EmailEventType.online_assessment] + " email",
             )
-            body = render("/applications", "applications.html", rows=enriched)
+            attention = []
+            for application, job, company, last_dt, last_text in enriched:
+                if application.state == ApplicationState.interviewing:
+                    if last_text in _UNACTED_EMAIL_LABELS and not (application.notes or "").strip():
+                        attention.append((application, job, company, last_text, last_dt))
+                elif application.state == ApplicationState.applied:
+                    days = _age_days(last_dt, now)
+                    if days is not None and days >= _STALE_APPLIED_DAYS:
+                        attention.append(
+                            (application, job, company, f"No activity in {days} days", last_dt)
+                        )
+
+            groups: dict[str, list] = {"active": [], "waiting": [], "closed": []}
+            for row in enriched:
+                state = row[0].state
+                key = "active" if state in _ACTIVE_STATES else "closed" if state in _CLOSED_STATES else "waiting"
+                groups[key].append(row)
+
+            body = render(
+                "/applications", "applications.html",
+                groups=groups, attention=attention, total=len(enriched),
+            )
         return body
+
+    @app.get("/applications/{application_id}", response_class=HTMLResponse)
+    def application_detail(application_id: int):
+        with get_session(get_engine(db_path)) as session:
+            row = session.execute(
+                select(Application, Job, Company)
+                .join(Job, Application.job_id == Job.id)
+                .join(Company, Job.company_id == Company.id)
+                .where(Application.id == application_id)
+            ).first()
+            if row is None:
+                return HTMLResponse(
+                    render(
+                        "/applications",
+                        "placeholder.html",
+                        heading="Application not found",
+                        blurb=f"No application with id {application_id}.",
+                        detail="",
+                    ),
+                    status_code=404,
+                )
+            application, job, company = row
+            state_events = session.scalars(
+                select(ApplicationStateEvent)
+                .where(ApplicationStateEvent.application_id == application_id)
+                .order_by(ApplicationStateEvent.created_at)
+            ).all()
+            emails = session.scalars(
+                select(EmailEvent)
+                .where(EmailEvent.application_id == application_id)
+                .order_by(EmailEvent.received_at)
+            ).all()
+
+            timeline = []
+            for event in state_events:
+                who = "You" if event.source == "manual" else "Inbox agent"
+                text = f"{who} set state to {event.to_state.value}"
+                if event.from_state is not None:
+                    text += f" (from {event.from_state.value})"
+                timeline.append({"kind": "state", "dt": _tz(event.created_at), "text": text})
+            for event in emails:
+                timeline.append({
+                    "kind": "email",
+                    "dt": _tz(event.received_at),
+                    "type_label": _EMAIL_TYPE_LABEL[event.classified_type],
+                    "sender": event.sender,
+                    "subject": event.subject,
+                    "body": event.body_text,
+                })
+            epoch = datetime.min.replace(tzinfo=timezone.utc)
+            timeline.sort(key=lambda item: item["dt"] or epoch, reverse=True)
+
+            body = render(
+                "/applications",
+                "application_detail.html",
+                application=application,
+                job=job,
+                company=company,
+                timeline=timeline,
+                states=[s.value for s in ApplicationState],
+            )
+        return HTMLResponse(body)
+
+    @app.post("/applications/{application_id}/set-state")
+    def application_set_state(application_id: int, state: str = Form(...)):
+        from copilot.applications import set_state
+
+        try:
+            to_state = ApplicationState(state)
+        except ValueError:
+            return HTMLResponse(f"'{html.escape(state)}' is not a state.", status_code=400)
+        with get_session(get_engine(db_path)) as session:
+            application = session.get(Application, application_id)
+            if application is None:
+                return HTMLResponse(f"No application with id {application_id}.", status_code=404)
+            set_state(session, application.job_id, to_state)
+            session.commit()
+        return RedirectResponse(f"/applications/{application_id}", status_code=303)
+
+    @app.post("/applications/{application_id}/untrack")
+    def application_untrack(application_id: int):
+        from copilot.applications import untrack
+
+        with get_session(get_engine(db_path)) as session:
+            application = session.get(Application, application_id)
+            if application is None:
+                return HTMLResponse(f"No application with id {application_id}.", status_code=404)
+            try:
+                untrack(session, application.job_id)
+                session.commit()
+            except LookupError as exc:
+                return HTMLResponse(str(exc), status_code=404)
+        return RedirectResponse("/applications", status_code=303)
+
+    @app.post("/applications/{application_id}/note")
+    def application_set_note(application_id: int, note: str = Form("")):
+        with get_session(get_engine(db_path)) as session:
+            application = session.get(Application, application_id)
+            if application is None:
+                return HTMLResponse(f"No application with id {application_id}.", status_code=404)
+            application.notes = note.strip() or None
+            session.commit()
+        return RedirectResponse(f"/applications/{application_id}", status_code=303)
 
     @app.get("/jobs/{job_id}", response_class=HTMLResponse)
     def job_detail(job_id: int):
