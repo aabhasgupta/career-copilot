@@ -24,6 +24,9 @@ class DiscoveredJob(BaseModel):
     source: str
     jd_text: str | None = None
     apply_url: str
+    # Only JSearch's API states this explicitly; None (not False) for every
+    # other source means "unknown", never "assumed indirect" (D51/D10).
+    apply_is_direct: bool | None = None
     posted_at: datetime | None = None
     ats_type: ATSType = ATSType.unknown
     ats_slug: str | None = None

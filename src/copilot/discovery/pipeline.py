@@ -144,6 +144,8 @@ def _upsert_job(session: Session, discovered: DiscoveredJob, company: Company) -
             existing.salary_source = discovered.salary_source
         if existing.posted_at is None and discovered.posted_at is not None:
             existing.posted_at = discovered.posted_at
+        if existing.apply_is_direct is None and discovered.apply_is_direct is not None:
+            existing.apply_is_direct = discovered.apply_is_direct
         return False
 
     sibling = _find_location_split_sibling(session, discovered, company)
@@ -159,6 +161,8 @@ def _upsert_job(session: Session, discovered: DiscoveredJob, company: Company) -
             sibling.salary_source = discovered.salary_source
         if sibling.posted_at is None and discovered.posted_at is not None:
             sibling.posted_at = discovered.posted_at
+        if sibling.apply_is_direct is None and discovered.apply_is_direct is not None:
+            sibling.apply_is_direct = discovered.apply_is_direct
         return False
 
     session.add(
@@ -177,6 +181,7 @@ def _upsert_job(session: Session, discovered: DiscoveredJob, company: Company) -
             source=discovered.source,
             jd_text=discovered.jd_text,
             apply_url=discovered.apply_url,
+            apply_is_direct=discovered.apply_is_direct,
             posted_at=discovered.posted_at,
             dedupe_hash=h,
         )
@@ -398,6 +403,7 @@ def _poll_board(
         changed = False
         if posting.apply_url and job.apply_url != posting.apply_url:
             job.apply_url = posting.apply_url
+            job.apply_is_direct = True  # upgraded to the company's own board
             changed = True
         if posting.jd_text and len(posting.jd_text) > len(job.jd_text or ""):
             job.jd_text = posting.jd_text
@@ -426,6 +432,7 @@ def _poll_board(
             source=company.ats_type.value,
             jd_text=posting.jd_text,
             apply_url=posting.apply_url,
+            apply_is_direct=True,  # a company's own ATS board - direct by definition
             posted_at=posting.posted_at,
             ats_type=company.ats_type,
             ats_slug=company.ats_slug,

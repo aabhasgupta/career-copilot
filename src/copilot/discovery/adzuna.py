@@ -28,10 +28,31 @@ def _looks_remote(*texts: str | None) -> bool | None:
     return None
 
 
+def _clean_location_display(location: dict | None) -> str | None:
+    """Adzuna's display_name is always the last two entries of `area`, which
+    for a deeply-nested result means a hyper-local neighborhood name paired
+    with whatever's one level above it ("Illinois Medical District,
+    Chicago") rather than the actual city ("Chicago") sitting one level up
+    still - confirmed live, a single one of these neighborhood tags was
+    sitting on 36 otherwise-unrelated postings, suggesting it's closer to a
+    noisy default than real per-posting precision (docs/DECISIONS.md D51).
+    Capping the depth at 4 (country/state/county/city) recovers the real
+    city for these without changing anything for results that were never
+    nested that deep in the first place ("Boston, Suffolk County" stays
+    exactly as Adzuna gave it)."""
+    if not location:
+        return None
+    area = location.get("area") or []
+    if len(area) <= 4:
+        return location.get("display_name")
+    capped = area[:4]
+    return f"{capped[-1]}, {capped[-2]}"
+
+
 def _normalize(result: dict, source_query_location: str) -> DiscoveredJob:
     title = result.get("title", "").strip()
     company_name = (result.get("company") or {}).get("display_name", "Unknown Company")
-    location_display = (result.get("location") or {}).get("display_name")
+    location_display = _clean_location_display(result.get("location"))
     apply_url = result.get("redirect_url", "")
     ats_type, ats_slug = detect_ats(apply_url)
 

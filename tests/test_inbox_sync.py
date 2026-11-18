@@ -264,6 +264,94 @@ def test_sync_notifies_for_interview_invite_but_not_confirmation(tmp_path, monke
         assert provider.sent == []
 
 
+def test_sync_adds_calendar_event_for_dated_interview_invite(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "copilot.email_agent.sync.add_calendar_event",
+        lambda summary, start, *, all_day, notes: calls.append((summary, start, all_day)) or True,
+    )
+    with _session(tmp_path) as session:
+        _seed_tracked_application(session)
+        _stub_classifier(
+            monkeypatch, classified_type=EmailEventType.interview_invite,
+            interview_at="2026-11-24T14:00:00-05:00",
+        )
+        provider = FakeProvider([_message()])
+
+        result = run_sync(
+            session, provider, _profile(tmp_path), state_path=tmp_path / "state.json"
+        )
+
+        assert len(calls) == 1
+        assert calls[0][2] is False  # all_day
+        event = session.query(EmailEvent).one()
+        assert event.calendar_event_added is True
+        assert any("calendar event added" in a for a in result.actions)
+
+
+def test_sync_does_not_add_calendar_event_without_a_stated_date(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "copilot.email_agent.sync.add_calendar_event",
+        lambda *a, **k: calls.append(1) or True,
+    )
+    with _session(tmp_path) as session:
+        _seed_tracked_application(session)
+        _stub_classifier(
+            monkeypatch, classified_type=EmailEventType.interview_invite, interview_at=None
+        )
+        provider = FakeProvider([_message()])
+
+        run_sync(session, provider, _profile(tmp_path), state_path=tmp_path / "state.json")
+
+        assert calls == []
+        event = session.query(EmailEvent).one()
+        # Attempted (so it's never retried pointlessly) but nothing to add.
+        assert event.calendar_event_added is True
+
+
+def test_sync_does_not_add_calendar_event_for_non_schedulable_types(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "copilot.email_agent.sync.add_calendar_event",
+        lambda *a, **k: calls.append(1) or True,
+    )
+    with _session(tmp_path) as session:
+        _seed_tracked_application(session)
+        _stub_classifier(
+            monkeypatch, classified_type=EmailEventType.confirmation, interview_at="2026-11-24"
+        )
+        provider = FakeProvider([_message()])
+
+        run_sync(session, provider, _profile(tmp_path), state_path=tmp_path / "state.json")
+
+        assert calls == []
+        event = session.query(EmailEvent).one()
+        assert event.calendar_event_added is False
+
+
+def test_sync_does_not_add_calendar_event_in_dry_run(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "copilot.email_agent.sync.add_calendar_event",
+        lambda *a, **k: calls.append(1) or True,
+    )
+    with _session(tmp_path) as session:
+        _seed_tracked_application(session)
+        _stub_classifier(
+            monkeypatch, classified_type=EmailEventType.interview_invite,
+            interview_at="2026-11-24T14:00:00-05:00",
+        )
+        provider = FakeProvider([_message()])
+
+        run_sync(
+            session, provider, _profile(tmp_path), state_path=tmp_path / "state.json",
+            dry_run=True,
+        )
+
+        assert calls == []
+
+
 def test_known_thread_bypasses_prefilter_and_correlates(tmp_path, monkeypatch):
     """A reply like "Re: Next steps" carries no ATS domain and no pattern
     match - thread continuity is what keeps the conversation tracked."""

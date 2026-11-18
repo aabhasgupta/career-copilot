@@ -58,6 +58,16 @@ class EmailClassification(BaseModel):
     job_title: str | None = Field(
         description="The role's title if the email mentions it, else null"
     )
+    interview_at: str | None = Field(
+        default=None,
+        description="Only for interview_invite/online_assessment: the stated date/time, "
+        "resolved against this email's own Received date (e.g. 'next Tuesday' + Received "
+        "date). If a specific date AND time is given, return full ISO 8601 with a UTC "
+        "offset ('2026-11-24T14:00:00-05:00') - assume US Eastern if no timezone is "
+        "stated, since most scheduling tools default to it. If only a date is given (no "
+        "time), return just 'YYYY-MM-DD'. If nothing concrete is stated (e.g. 'sometime "
+        "next week', 'we'll follow up with times'), null - never guess a date.",
+    )
 
 
 PROMPT_TEMPLATE = """Classify this email from a job seeker's inbox.

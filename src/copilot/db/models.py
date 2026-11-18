@@ -138,6 +138,10 @@ class Job(Base):
     source: Mapped[str] = mapped_column(String(64))
     jd_text: Mapped[str | None] = mapped_column(Text)
     apply_url: Mapped[str] = mapped_column(Text)
+    # Only JSearch's API states this explicitly (docs/DECISIONS.md D51) -
+    # null means "unknown" (every other source, or a JSearch result that
+    # didn't say), never "assumed indirect" (D10).
+    apply_is_direct: Mapped[bool | None] = mapped_column()
     posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     dedupe_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     fit_score: Mapped[float | None] = mapped_column(Float)
@@ -253,6 +257,10 @@ class EmailEvent(Base):
     implied_state: Mapped[ApplicationState | None] = mapped_column(Enum(ApplicationState))
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    # Best-effort Mac Calendar event for an interview_invite/online_assessment
+    # with a stated date (docs/DECISIONS.md D49) - never retried once True,
+    # so a flaky Calendar.app call can't double-add on the next sync.
+    calendar_event_added: Mapped[bool] = mapped_column(default=False)
 
     application: Mapped[Application] = relationship(back_populates="email_events")
 

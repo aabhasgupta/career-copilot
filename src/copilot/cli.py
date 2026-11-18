@@ -325,6 +325,8 @@ def score(
 
     from copilot.db import get_engine, get_session
     from copilot.db.models import Job
+    from copilot.geocode import Geocoder
+    from copilot.ranking import rank_jobs
     from copilot.resume import extract_resume_profile, resume_content_hash
     from copilot.scoring.rubric import score_and_apply, stale_score_filter
 
@@ -338,8 +340,13 @@ def score(
         condition = Job.fit_score.is_(None)
         if rescore_stale:
             condition = condition | (Job.fit_score.is_not(None) & is_stale_sql)
-        stmt = select(Job).where(condition).order_by(Job.created_at.desc()).limit(limit)
-        jobs = session.scalars(stmt).all()
+        # Ranked, not just "most recently discovered" (D50): which jobs are
+        # worth spending a Claude call on is exactly what the existing
+        # preference ranking (title/industry/location/company/freshness)
+        # already answers for display - scoring should spend on the same
+        # jobs that rank first, not an unrelated recency order.
+        candidates = session.scalars(select(Job).where(condition)).all()
+        jobs = rank_jobs(candidates, profile, Geocoder())[:limit]
 
         from sqlalchemy import func
 
@@ -1017,6 +1024,30 @@ def jobs_list(
             )
 
 
+@jobs_app.command("confirm-fresh")
+def jobs_confirm_fresh() -> None:
+    """For a resume edit you know didn't change anything scoring-relevant
+    (typo fix, reformatting) - re-stamps every scored job's resume-version
+    marker to the current resume without rescoring or spending anything.
+    Use 'copilot score --rescore-stale' instead if the edit actually changes
+    your skills/experience and should be reflected in scores."""
+    profile_path = Path(PROFILE_FILENAME)
+    if not profile_path.exists():
+        console.print(f"[red]{PROFILE_FILENAME} not found.[/] Run 'copilot init' first.")
+        raise typer.Exit(1)
+
+    profile = load_profile()
+
+    from copilot.db import get_engine, get_session
+    from copilot.resume import resume_content_hash
+    from copilot.scoring.rubric import confirm_scores_still_fresh
+
+    current_hash = resume_content_hash(profile.resume_path)
+    with get_session(get_engine()) as session:
+        updated = confirm_scores_still_fresh(session, current_hash)
+    console.print(f"[green]{updated} job(s)[/] marked fresh against the current resume.")
+
+
 @jobs_app.command("show")
 def jobs_show(job_id: int) -> None:
     """Full detail for one job: the written fit reasoning and the five
@@ -1048,7 +1079,12 @@ def jobs_show(job_id: int) -> None:
                 f"{job.location or 'unknown location'}"
                 f"{' (remote)' if job.remote else ''} | {salary} | via {job.source}\n"
                 f"Posted {format_posted(job)} | {state_line}\n"
-                f"{job.apply_url}",
+                f"{job.apply_url}"
+                + (
+                    "  [yellow](indirect - lands on a job board first)[/]"
+                    if job.apply_is_direct is False
+                    else "  [green](direct)[/]" if job.apply_is_direct is True else ""
+                ),
                 title=f"Job #{job.id}",
             )
         )

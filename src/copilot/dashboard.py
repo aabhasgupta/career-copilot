@@ -284,19 +284,29 @@ def _jobs_query_string(f: dict, **overrides) -> str:
 
 
 def _link_options(session, suggestion) -> Markup:
-    """<option> list of tracked applications for the suggestion link dropdown -
-    a picker instead of a free-typed job id, so linking can't hit a typo'd or
-    wrong job (user feedback, live verification 2026-07-25).
+    """<option> list for the suggestion link dropdown - a picker instead of a
+    free-typed job id, so linking can't hit a typo'd or wrong job (user
+    feedback, live verification 2026-07-25).
 
     Ordered by likelihood, deterministically - zero LLM (a review page must
     render instantly and free): name overlap with the suggestion's evidence
     first, then most recent state activity. Ordering only promotes; every
     tracked application stays in the list, because a suggestion exists precisely
-    when automatic matching failed - the human may know better."""
+    when automatic matching failed - the human may know better.
+
+    Also offers discovered-but-never-tracked jobs (docs/DECISIONS.md D48) -
+    "applied outside Copilot to a job it already found" was previously only
+    linkable via the CLI's --job flag, since confirm()/_link_to_existing_job
+    accepts any job id and creates the Application on demand, but this
+    dropdown only ever queried jobs that already had one. Unlike tracked
+    applications (always shown, there are only ever a handful), untracked
+    jobs are capped to ones with actual name overlap - there can be
+    thousands of them, and listing every one would make the dropdown
+    useless."""
     from copilot.db.models import ApplicationStateEvent
     from copilot.scoring.sponsorship import normalize_company_name
 
-    rows = session.execute(
+    tracked_rows = session.execute(
         select(Application, Job, Company)
         .join(Job, Application.job_id == Job.id)
         .join(Company, Job.company_id == Company.id)
@@ -320,15 +330,32 @@ def _link_options(session, suggestion) -> Markup:
             return 2  # whole company name appears in the email's evidence
         return 1 if any(t in evidence.split() for t in name.split()) else 0
 
-    rows.sort(key=lambda r: (-name_score(r[2]), -last_event.get(r[0].id, 0), r[2].name))
-    return Markup(
-        "".join(
+    tracked_rows.sort(key=lambda r: (-name_score(r[2]), -last_event.get(r[0].id, 0), r[2].name))
+    options = [
+        f'<option value="{job.id}">'
+        f"#{job.id} {html.escape(company.name)} - {html.escape(job.title)}"
+        f" ({application.state.value})</option>"
+        for application, job, company in tracked_rows
+    ]
+
+    untracked_rows = session.execute(
+        select(Job, Company)
+        .join(Company, Job.company_id == Company.id)
+        .outerjoin(Application, Application.job_id == Job.id)
+        .where(Application.id.is_(None))
+    ).all()
+    untracked_scored = [(name_score(company), job, company) for job, company in untracked_rows]
+    untracked_scored = sorted((r for r in untracked_scored if r[0] > 0), key=lambda r: -r[0])[:10]
+    if untracked_scored:
+        options.append('<optgroup label="Found, not yet applied through Copilot">')
+        options.extend(
             f'<option value="{job.id}">'
-            f"#{job.id} {html.escape(company.name)} - {html.escape(job.title)}"
-            f" ({application.state.value})</option>"
-            for application, job, company in rows
+            f"#{job.id} {html.escape(company.name)} - {html.escape(job.title)}</option>"
+            for _, job, company in untracked_scored
         )
-    )
+        options.append("</optgroup>")
+
+    return Markup("".join(options))
 
 
 def _schedule_status() -> object:
@@ -1022,11 +1049,12 @@ def create_app(
 
     @app.post("/jobs/score-batch")
     def jobs_score_batch(count: int = Form(25)):
-        """Bulk-score the next `count` unscored jobs, newest-discovered first -
-        same ordering `copilot score` already uses. Separate action from
-        Search by design: finding jobs is free (aside from JSearch quota),
-        scoring spends real Claude tokens, so the user chooses how much to
-        spend and when."""
+        """Bulk-score the next `count` unscored jobs, ranked by the same
+        title/industry/location/company preference ordering used everywhere
+        jobs are listed (D50) - not just newest-discovered. Separate action
+        from Search by design: finding jobs is free (aside from JSearch
+        quota), scoring spends real Claude tokens, so the user chooses how
+        much to spend and when."""
         if not _profile_ready():
             return RedirectResponse("/", status_code=303)
         from copilot.resume import extract_resume_profile
@@ -1037,10 +1065,8 @@ def create_app(
             profile = Profile.model_validate(pyyaml.safe_load(f))
         engine = get_engine(db_path)
         with get_session(engine) as session:
-            stmt = (
-                select(Job).where(Job.fit_score.is_(None)).order_by(Job.created_at.desc()).limit(count)
-            )
-            jobs = session.scalars(stmt).all()
+            candidates = session.scalars(select(Job).where(Job.fit_score.is_(None))).all()
+            jobs = rank_jobs(candidates, profile, Geocoder())[:count]
             if not jobs:
                 msg = '<div class="flash err">Nothing to score - every job matching your search already has a fit score.</div>'
                 return HTMLResponse(jobs_list(flash=msg))
@@ -1094,6 +1120,25 @@ def create_app(
         msg = f"Rescored {result.scored} job{'s' if result.scored != 1 else ''} against your current resume."
         if result.missing:
             msg += f" {result.missing} got no score back - try again to retry."
+        return HTMLResponse(jobs_list(flash=f'<div class="flash ok">{html.escape(msg)}</div>'))
+
+    @app.post("/jobs/confirm-fresh")
+    def jobs_confirm_fresh():
+        """The user's override for a resume edit they know didn't change
+        anything scoring-relevant - re-stamps every scored job without
+        touching the score or spending anything (docs/DECISIONS.md D48)."""
+        if not _profile_ready():
+            return RedirectResponse("/", status_code=303)
+        from copilot.resume import resume_content_hash
+        from copilot.scoring.rubric import confirm_scores_still_fresh
+
+        with open(profile_path) as f:
+            profile = Profile.model_validate(pyyaml.safe_load(f))
+        current_hash = resume_content_hash(profile.resume_path)
+        engine = get_engine(db_path)
+        with get_session(engine) as session:
+            updated = confirm_scores_still_fresh(session, current_hash)
+        msg = f"{updated} job(s) marked fresh against the current resume - no rescoring needed."
         return HTMLResponse(jobs_list(flash=f'<div class="flash ok">{html.escape(msg)}</div>'))
 
     @app.post("/jobs/{job_id}/score")

@@ -172,6 +172,44 @@ def test_freshness_tier_buckets_by_fresh_window():
     assert freshness_tier(unknown) == 1  # never assumed fresh
 
 
+def test_title_tier_is_the_first_matching_titles_index():
+    from copilot.ranking import title_tier
+
+    titles = ["Data Scientist", "Applied Scientist", "AI Engineering Manager"]
+    assert title_tier(_job(title="Senior Data Scientist"), titles) == 0
+    assert title_tier(_job(title="Applied Scientist II"), titles) == 1
+    assert title_tier(_job(title="AI Engineering Manager"), titles) == 2
+    assert title_tier(_job(title="Backend Engineer"), titles) == len(titles)  # no match
+
+
+def test_title_tier_empty_titles_list_ties_everyone():
+    from copilot.ranking import title_tier
+
+    assert title_tier(_job(title="Data Scientist"), []) == 0
+
+
+def test_rank_jobs_prefers_higher_priority_title_among_unscored(tmp_path: Path):
+    """D50: search.titles' order is a real ranking factor among unscored
+    jobs, not just a flat discovery query list - this is what lets
+    'score the top N' mean 'the N most relevant', not 'the N newest'."""
+    from copilot.config import Profile
+    from copilot.ranking import rank_jobs
+
+    profile = Profile.model_validate(
+        {
+            "identity": {"full_name": "X", "email": "x@example.com"},
+            "resume_path": "data/resume.pdf",
+            "search": {"titles": ["Data Scientist", "AI Engineering Manager"]},
+            "visa": {"needs_sponsorship": True, "status": "h1b_transfer"},
+            "email_integration": {"provider": "outlook", "address": "x@hotmail.com"},
+        }
+    )
+    manager = _job(title="AI Engineering Manager", posted_at=_days_ago(1))
+    scientist = _job(title="Data Scientist", posted_at=_days_ago(1))
+    ranked = rank_jobs([manager, scientist], profile, _offline_geocoder(tmp_path))
+    assert ranked == [scientist, manager]
+
+
 def test_rank_jobs_prefers_fresher_posting_within_same_fit_tier(tmp_path: Path):
     from copilot.config import Profile
     from copilot.ranking import rank_jobs

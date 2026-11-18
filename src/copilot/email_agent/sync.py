@@ -55,6 +55,11 @@ from copilot.email_agent.classifier import IMPLIED_STATE, classify_email, pick_c
 from copilot.email_agent.correlator import find_candidates, find_thread_candidates, learn_domain
 from copilot.email_agent.provider import EmailProvider, InboundMessage
 from copilot.notify.alerts import ALERT_TYPES, send_event_alert
+from copilot.notify.calendar import add_calendar_event, parse_interview_at
+
+# D49: only these two actually have a scheduled moment worth calendaring -
+# a rejection/confirmation/recruiter_screen has no date to add.
+_CALENDAR_TYPES = {EmailEventType.interview_invite, EmailEventType.online_assessment}
 
 SYNC_STATE_PATH = DATA_DIR / "inbox_state.json"
 FIRST_RUN_LOOKBACK_DAYS = 7
@@ -295,6 +300,7 @@ def _process_message(
 
     application, job, company = candidate.application, candidate.job, candidate.company
     relation = "stale" if implied is None else state_relation(application.state, implied)
+    event: EmailEvent | None = None  # only set in the non-conflict branch below
 
     if relation == "conflict":
         # D24: contradicts the stored state - flag it, write no state.
@@ -372,6 +378,36 @@ def _process_message(
             classification.classified_type, message,
             company.name, job.title, result, dry_run=dry_run,
         )
+        if not dry_run and event is not None:
+            _maybe_add_calendar_event(classification, event, company.name, job.title, result)
+
+
+def _maybe_add_calendar_event(
+    classification, event: EmailEvent, company_name: str, job_title: str, result: SyncResult
+) -> None:
+    """Best-effort Mac Calendar event for a dated interview_invite/
+    online_assessment (D49). Never retried once attempted - calendar_event_
+    added is set regardless of success, since a flaky Calendar.app call on
+    this run shouldn't get a second (possibly duplicate) attempt next hour;
+    the alert and the stored email body already carry the information."""
+    if classification.classified_type not in _CALENDAR_TYPES:
+        return
+    parsed = parse_interview_at(classification.interview_at)
+    event.calendar_event_added = True
+    if parsed is None:
+        return
+    start, all_day = parsed
+    label = "Interview" if classification.classified_type == EmailEventType.interview_invite else "Assessment"
+    created = add_calendar_event(
+        f"{label}: {company_name} - {job_title}",
+        start,
+        all_day=all_day,
+        notes=f"Added from an email - {company_name} / {job_title}.",
+    )
+    result.actions.append(
+        f"{company_name}: calendar event {'added' if created else 'failed to add'} "
+        f"for {classification.interview_at}"
+    )
 
 
 def _maybe_alert(

@@ -14,7 +14,10 @@
     {% if job.employment_type %}<span class="chip">{{ job.employment_type }}</span>{% endif %}
     {% if job.company and job.company.industry %}<span class="chip">{{ job.company.industry }}</span>{% endif %}
   </div>
-  <p><a href="{{ job.apply_url }}" target="_blank" rel="noopener">Open application &rarr;</a></p>
+  <p><a href="{{ job.apply_url }}" target="_blank" rel="noopener">Open application &rarr;</a>
+  {% if job.apply_is_direct is sameas false %}<span class="indirect-badge" title="This source didn't link straight to the employer - expect to land on a job board first, sometimes more than one hop.">&#8599; indirect</span>
+  {% elif job.apply_is_direct is sameas true %}<span class="direct-badge" title="Links straight to the company's own application page (its public Greenhouse/Lever/Ashby/SmartRecruiters/Workday board).">&check; direct</span>{% endif %}
+  </p>
 </article>
 
 <article>

@@ -244,6 +244,57 @@ def test_is_score_stale_false_when_never_scored():
     assert not is_score_stale(job, "abc")
 
 
+def test_confirm_scores_still_fresh_stamps_without_rescoring(tmp_path: Path):
+    """D48: the user's override for a cosmetic-only resume edit - no LLM
+    call, fit_score/reasoning untouched, only the staleness marker moves."""
+    from copilot.scoring.rubric import confirm_scores_still_fresh
+
+    engine = get_engine(tmp_path / "test.db")
+    init_db(engine)
+    with get_session(engine) as session:
+        acme = Company(name="Acme")
+        session.add(acme)
+        session.flush()
+        scored = Job(
+            company_id=acme.id, title="A", source="greenhouse",
+            apply_url="https://acme.com/1", dedupe_hash="h1",
+            fit_score=70.0, fit_reasoning="Good match.", scored_resume_hash="old",
+        )
+        never_scored = Job(
+            company_id=acme.id, title="B", source="greenhouse",
+            apply_url="https://acme.com/2", dedupe_hash="h2",
+        )
+        session.add_all([scored, never_scored])
+        session.commit()
+
+        updated = confirm_scores_still_fresh(session, "new")
+
+        assert updated == 1
+        assert scored.scored_resume_hash == "new"
+        assert scored.fit_score == 70.0  # untouched
+        assert scored.fit_reasoning == "Good match."  # untouched
+        assert never_scored.scored_resume_hash is None  # never scored, left alone
+
+
+def test_confirm_scores_still_fresh_is_a_noop_when_already_current(tmp_path: Path):
+    from copilot.scoring.rubric import confirm_scores_still_fresh
+
+    engine = get_engine(tmp_path / "test.db")
+    init_db(engine)
+    with get_session(engine) as session:
+        acme = Company(name="Acme")
+        session.add(acme)
+        session.flush()
+        session.add(Job(
+            company_id=acme.id, title="A", source="greenhouse",
+            apply_url="https://acme.com/1", dedupe_hash="h1",
+            fit_score=70.0, scored_resume_hash="current",
+        ))
+        session.commit()
+
+        assert confirm_scores_still_fresh(session, "current") == 0
+
+
 def test_stale_score_filter_matches_null_hash_at_sql_level(tmp_path: Path):
     """Real bug caught while building this: SQL's != is NULL (not TRUE) for
     a NULL column, so a plain `Job.scored_resume_hash != current_hash`

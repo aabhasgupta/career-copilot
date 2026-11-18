@@ -36,6 +36,82 @@ def test_detect_ats_unknown_for_aggregator_proxy():
     assert slug is None
 
 
+def test_clean_location_display_caps_depth_at_city_level():
+    """Real bug, caught live: Adzuna's display_name is always the last two
+    `area` entries - for a 5-deep result that's a hyper-local neighborhood
+    paired with whatever's above it ("Illinois Medical District, Chicago"),
+    throwing away the real city ("Chicago") sitting one level up."""
+    from copilot.discovery.adzuna import _clean_location_display
+
+    nested = {
+        "area": ["US", "Illinois", "Cook County", "Chicago", "Illinois Medical District"],
+        "display_name": "Illinois Medical District, Chicago",
+    }
+    # Matches exactly what Adzuna itself returns for the same city with no
+    # neighborhood suffix - confirmed live.
+    assert _clean_location_display(nested) == "Chicago, Cook County"
+
+
+def test_clean_location_display_unchanged_when_not_nested_deep():
+    """A result that was never 5-deep (city/county is already the deepest
+    level) keeps Adzuna's own display_name exactly - no information to
+    recover, and "Boston, Suffolk County" is already a good label."""
+    from copilot.discovery.adzuna import _clean_location_display
+
+    shallow = {
+        "area": ["US", "Massachusetts", "Suffolk County", "Boston"],
+        "display_name": "Boston, Suffolk County",
+    }
+    assert _clean_location_display(shallow) == "Boston, Suffolk County"
+
+
+def test_clean_location_display_handles_missing_location():
+    from copilot.discovery.adzuna import _clean_location_display
+
+    assert _clean_location_display(None) is None
+    assert _clean_location_display({}) is None
+
+
+def test_normalize_jsearch_captures_apply_is_direct():
+    direct = normalize_jsearch({"job_title": "A", "job_apply_is_direct": True})
+    indirect = normalize_jsearch({"job_title": "B", "job_apply_is_direct": False})
+    unknown = normalize_jsearch({"job_title": "C"})
+    assert direct.apply_is_direct is True
+    assert indirect.apply_is_direct is False
+    assert unknown.apply_is_direct is None
+
+
+def test_normalize_jsearch_falls_back_to_domain_when_flag_absent():
+    """Real bug, caught live: a bebee.com result had no job_apply_is_direct
+    flag at all and got no "indirect" badge - the domain itself is enough
+    to know, even without JSearch saying so explicitly."""
+    job = normalize_jsearch({
+        "job_title": "Data Scientist",
+        "job_apply_link": "https://bebee.com/us/jobs/data-scientist-100-remote-x",
+    })
+    assert job.apply_is_direct is False
+
+
+def test_normalize_jsearch_domain_fallback_never_overrides_an_explicit_flag():
+    job = normalize_jsearch({
+        "job_title": "Data Scientist",
+        "job_apply_link": "https://bebee.com/us/jobs/data-scientist-100-remote-x",
+        "job_apply_is_direct": True,
+    })
+    assert job.apply_is_direct is True
+
+
+def test_normalize_jsearch_domain_fallback_does_not_flag_legitimate_boards():
+    """LinkedIn/Indeed/etc. are single-hop boards, not the chain-through-
+    another-third-party pattern this is meant to catch - left as unknown,
+    not incorrectly marked indirect."""
+    job = normalize_jsearch({
+        "job_title": "Data Scientist",
+        "job_apply_link": "https://www.linkedin.com/jobs/view/123",
+    })
+    assert job.apply_is_direct is None
+
+
 def test_normalize_adzuna_marks_predicted_salary_as_estimate():
     result = {
         "title": "Machine Learning Engineer",

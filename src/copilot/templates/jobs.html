@@ -45,6 +45,12 @@
     </button>
   </form>
   <span class="action-note stale-note">{{ stale_total }} job{{ 's' if stale_total != 1 }} scored under a previous resume</span>
+  <form method="post" action="/jobs/confirm-fresh" class="inline">
+    <button type="submit" class="mini ghost"
+      title="For a resume edit that didn't actually change your skills/experience (typo, formatting) - keeps existing scores, costs nothing.">
+      Keep scores (cosmetic edit)
+    </button>
+  </form>
   {% endif %}
 </article>
 
@@ -129,7 +135,10 @@
           <td>{{ visa_cell(job) }}</td>
           <td>
             {% if job.application %}{{ state_badge(job.application.state) }}
-            {% else %}<a href="{{ job.apply_url }}" target="_blank" rel="noopener">Apply &rarr;</a>{% endif %}
+            {% else %}<a href="{{ job.apply_url }}" target="_blank" rel="noopener">Apply &rarr;</a>
+            {% if job.apply_is_direct is sameas false %}<span class="indirect-badge" title="This source didn't link straight to the employer - expect to land on a job board first, sometimes more than one hop.">&#8599; indirect</span>
+            {% elif job.apply_is_direct is sameas true %}<span class="direct-badge" title="Links straight to the company's own application page (its public Greenhouse/Lever/Ashby/SmartRecruiters/Workday board).">&check; direct</span>{% endif %}
+            {% endif %}
           </td>
         </tr>
         {% else %}

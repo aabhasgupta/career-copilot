@@ -95,6 +95,20 @@ h1, h2, h3 { line-height: 1.2; }
   .action-note.stale-note { color: #ffd77a; }
 }
 
+/* JSearch states explicitly whether an apply link lands on the employer or
+   bounces through a job board first (docs/DECISIONS.md D51). */
+.indirect-badge {
+  display: inline-block; margin-left: .35rem; font-size: .72rem;
+  color: var(--pico-muted-color); cursor: help;
+}
+.direct-badge {
+  display: inline-block; margin-left: .35rem; font-size: .72rem;
+  color: #1d5e33; cursor: help;
+}
+@media (prefers-color-scheme: dark) {
+  .direct-badge { color: #6fcf8f; }
+}
+
 /* ---- Page headers ---- */
 .page-head { margin-bottom: 1.4rem; }
 .page-head h1 { margin: 0 0 .2rem; font-size: 1.5rem; letter-spacing: -.01em; }

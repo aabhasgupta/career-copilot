@@ -29,14 +29,14 @@ def send_desktop_notification(title: str, body: str) -> None:
     if sys.platform != "darwin":
         return
     # AppleScript string literals escape like JSON strings for plain text.
-    script = f"display notification {_as_script_string(body)} with title {_as_script_string(title)}"
+    script = f"display notification {as_applescript_string(body)} with title {as_applescript_string(title)}"
     try:
         subprocess.run(["osascript", "-e", script], capture_output=True, timeout=10)
     except (OSError, subprocess.SubprocessError):
         pass
 
 
-def _as_script_string(text: str) -> str:
+def as_applescript_string(text: str) -> str:
     escaped = text.replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
 

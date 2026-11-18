@@ -19,6 +19,7 @@ from dataclasses import dataclass
 
 from copilot.config import Profile
 from copilot.db.models import Job
+from copilot.discovery.matching import titles_match
 from copilot.formatting import posting_age_days
 from copilot.geocode import Geocoder
 
@@ -150,6 +151,19 @@ def company_tier(job: Job, company_preference: list[str]) -> int:
     return len(company_preference)
 
 
+def title_tier(job: Job, titles: list[str]) -> int:
+    """Index of the first search title the job's own title matches;
+    len(titles) if none match. Same ordered-preference pattern as
+    industry_tier/company_tier - search.titles' own order is the priority,
+    not just a flat discovery query list (docs/DECISIONS.md D50): a job
+    titled closer to the top of the list ranks higher among jobs that tie
+    on fit_score (most commonly, before either is scored at all)."""
+    for i, t in enumerate(titles):
+        if titles_match(job.title, t):
+            return i
+    return len(titles)
+
+
 def industry_label(tier: int, industry_preference: list[str]) -> str:
     if tier < len(industry_preference):
         return industry_preference[tier]
@@ -164,16 +178,20 @@ def rank_jobs(jobs: list[Job], profile: Profile, geocoder: Geocoder) -> list[Job
     descending - the model's holistic judgment is the strongest signal once it
     exists. Unscored jobs (fit_score is None) all tie on those first two keys
     and fall back to the pre-Phase-2 ranking: staffing-agency jobs sort after
-    direct employers (dominant rule, not blended), then a coarse freshness
-    tier (postings within FRESH_WINDOW_DAYS group ahead of older ones - a
-    real ranking factor, not just a tiebreak), then the location/industry/
-    company preference blend, then salary, then fine-grained recency - by the
-    posting's own posted_at (when the source says the job went live), not our
-    created_at (when we happened to discover it); unknown posted_at sorts
-    after known, never assumed to be the newest."""
+    direct employers (dominant rule, not blended), then title-preference tier
+    (search.titles' own order, D50 - "which roles take precedence" is a real
+    ranking factor among unscored jobs, not just a discovery query list),
+    then a coarse freshness tier (postings within FRESH_WINDOW_DAYS group
+    ahead of older ones - also a real ranking factor, not just a tiebreak),
+    then the location/industry/company preference blend, then salary, then
+    fine-grained recency - by the posting's own posted_at (when the source
+    says the job went live), not our created_at (when we happened to
+    discover it); unknown posted_at sorts after known, never assumed to be
+    the newest."""
     rules = build_rules(profile.search.location_preference, geocoder)
     industries = profile.search.industry_preference
     companies = profile.search.company_preference
+    titles = profile.search.titles
     downrank_staffing = profile.search.deprioritize_staffing
 
     def ind_tier(j: Job) -> int:
@@ -185,6 +203,7 @@ def rank_jobs(jobs: list[Job], profile: Profile, geocoder: Geocoder) -> list[Job
             j.fit_score is None,
             -(j.fit_score or 0),
             ind_tier(j) > len(industries),
+            title_tier(j, titles),
             freshness_tier(j),
             preference_tier(j, rules) + min(ind_tier(j), len(industries)) + company_tier(j, companies),
             preference_tier(j, rules),

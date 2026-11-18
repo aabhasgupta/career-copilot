@@ -26,6 +26,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from copilot import llm
@@ -270,6 +271,23 @@ def is_score_stale(job: Job, current_resume_hash: str) -> bool:
     existed (scored_resume_hash is null). Never claims a score is fresh
     without positive confirmation (docs/DECISIONS.md D47)."""
     return job.fit_score is not None and job.scored_resume_hash != current_resume_hash
+
+
+def confirm_scores_still_fresh(session: Session, current_resume_hash: str) -> int:
+    """The user's own override for a resume edit they know didn't change
+    anything scoring-relevant (typo fix, reformatting) - re-stamps every
+    scored job's resume hash to the current one without touching the score
+    itself or spending anything. A deliberate escape hatch, not an attempt
+    to auto-detect "cosmetic" edits - that would mean guessing at something
+    only the user actually knows (docs/DECISIONS.md D48)."""
+    jobs = session.scalars(select(Job).where(Job.fit_score.is_not(None))).all()
+    updated = 0
+    for job in jobs:
+        if job.scored_resume_hash != current_resume_hash:
+            job.scored_resume_hash = current_resume_hash
+            updated += 1
+    session.commit()
+    return updated
 
 
 def stale_score_filter(current_resume_hash: str):
