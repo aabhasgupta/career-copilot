@@ -16,6 +16,19 @@ import httpx
 from pydantic import BaseModel
 
 from copilot.db.models import ATSType
+from copilot.discovery.matching import matches_search_titles
+
+# Workday's Cloudflare-fronted CXS endpoint 429s without a browser-shaped
+# User-Agent (confirmed live 2026-11-17) - it's still unauthenticated and
+# read-only, the same data the public careers page itself fetches, just
+# gated behind basic bot-detection rather than Greenhouse/Lever/Ashby/
+# SmartRecruiters' fully open APIs (docs/DECISIONS.md D45).
+_BROWSER_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+    )
+}
 
 
 class BoardPosting(BaseModel):
@@ -116,17 +129,122 @@ def _fetch_ashby(slug: str, client: httpx.Client) -> list[BoardPosting]:
     return postings
 
 
+def _fetch_smartrecruiters(
+    slug: str, client: httpx.Client, title_filter: list[str] | None
+) -> list[BoardPosting]:
+    """Unlike Greenhouse/Lever/Ashby, SmartRecruiters' list endpoint doesn't
+    include full JD text - a second call per posting is needed for that, so
+    a company with thousands of postings (AbbVie: 2,043) would be far too
+    expensive to fully detail-fetch every run. title_filter (the profile's
+    search titles plus this company's already-tracked job titles) bounds the
+    list to postings worth the extra call; None means no bound (used by
+    tests / callers that already know they want everything)."""
+    postings: list[BoardPosting] = []
+    offset = 0
+    while True:
+        resp = client.get(
+            f"https://api.smartrecruiters.com/v1/companies/{slug}/postings",
+            params={"limit": 100, "offset": offset},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        content = data.get("content", [])
+        if not content:
+            break
+        for item in content:
+            title = item.get("name", "")
+            if title_filter is not None and not matches_search_titles(title, title_filter):
+                continue
+            detail = client.get(
+                f"https://api.smartrecruiters.com/v1/companies/{slug}/postings/{item['id']}"
+            )
+            if detail.status_code != 200:
+                continue
+            d = detail.json()
+            location = d.get("location") or {}
+            loc_str = location.get("fullLocation") or location.get("city")
+            sections = (d.get("jobAd") or {}).get("sections") or {}
+            jd_text = " ".join(
+                _strip_html(s.get("text")) or "" for s in sections.values() if isinstance(s, dict)
+            ).strip() or None
+            postings.append(
+                BoardPosting(
+                    title=title,
+                    location=loc_str,
+                    remote=location.get("remote"),
+                    apply_url=d.get("postingUrl") or d.get("applyUrl", ""),
+                    jd_text=jd_text,
+                    posted_at=_parse_iso(d.get("releasedDate")),
+                )
+            )
+        offset += 100
+        if offset >= data.get("totalFound", 0) or offset >= 500:
+            break
+    return postings
+
+
+def _fetch_workday(
+    slug: str, client: httpx.Client, title_filter: list[str] | None
+) -> list[BoardPosting]:
+    """slug is "tenant:site" (see discovery/ats.py). Same two-call shape as
+    SmartRecruiters: the list endpoint gives title/location/a relative
+    "Posted Today"-style string only, full JD + an actual date need a second
+    call per posting - title_filter bounds that."""
+    tenant, _, site = slug.partition(":")
+    postings: list[BoardPosting] = []
+    offset = 0
+    while True:
+        resp = client.post(
+            f"https://{tenant}.wd1.myworkdayjobs.com/wday/cxs/{tenant}/{site}/jobs",
+            json={"appliedFacets": {}, "limit": 20, "offset": offset, "searchText": ""},
+            headers=_BROWSER_HEADERS,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        jobs = data.get("jobPostings", [])
+        if not jobs:
+            break
+        for item in jobs:
+            title = item.get("title", "")
+            if title_filter is not None and not matches_search_titles(title, title_filter):
+                continue
+            detail = client.get(
+                f"https://{tenant}.wd1.myworkdayjobs.com/wday/cxs/{tenant}/{site}"
+                f"{item['externalPath']}",
+                headers=_BROWSER_HEADERS,
+            )
+            if detail.status_code != 200:
+                continue
+            jpi = detail.json().get("jobPostingInfo", {})
+            postings.append(
+                BoardPosting(
+                    title=jpi.get("title", title),
+                    location=jpi.get("location") or item.get("locationsText"),
+                    remote=(jpi.get("remoteType") or "").lower() in ("remote", "fully remote"),
+                    apply_url=jpi.get("externalUrl", ""),
+                    jd_text=_strip_html(jpi.get("jobDescription")),
+                    posted_at=_parse_iso(jpi.get("startDate")),
+                )
+            )
+        offset += 20
+        if offset >= data.get("total", 0) or offset >= 500:
+            break
+    return postings
+
+
 _FETCHERS = {
-    ATSType.greenhouse: _fetch_greenhouse,
-    ATSType.lever: _fetch_lever,
-    ATSType.ashby: _fetch_ashby,
+    ATSType.greenhouse: lambda slug, client, _title_filter: _fetch_greenhouse(slug, client),
+    ATSType.lever: lambda slug, client, _title_filter: _fetch_lever(slug, client),
+    ATSType.ashby: lambda slug, client, _title_filter: _fetch_ashby(slug, client),
+    ATSType.smartrecruiters: _fetch_smartrecruiters,
+    ATSType.workday: _fetch_workday,
 }
 
 
 def fetch_board_postings(
-    ats_type: ATSType, slug: str, client: httpx.Client
+    ats_type: ATSType, slug: str, client: httpx.Client, title_filter: list[str] | None = None
 ) -> list[BoardPosting]:
     fetcher = _FETCHERS.get(ats_type)
     if fetcher is None:
         raise ValueError(f"No board fetcher for ATS type {ats_type!r}")
-    return fetcher(slug, client)
+    return fetcher(slug, client, title_filter)

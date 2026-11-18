@@ -93,9 +93,18 @@ def _resume_content_block(resume_path: Path) -> dict:
     return {"type": "text", "text": data.decode()}
 
 
+def resume_content_hash(resume_path: Path) -> str:
+    """Hash of the resume file's bytes alone (no model) - used to tell
+    whether a job's fit score was computed against the resume as it exists
+    right now, or a version that's since been replaced (docs/DECISIONS.md
+    D47). Deliberately the same hash the extraction cache keys off of, just
+    without the model suffix, since staleness is about the resume content,
+    not which model happened to score it."""
+    return hashlib.sha256(resume_path.read_bytes()).hexdigest()
+
+
 def _cache_key(resume_path: Path, model: str) -> str:
-    digest = hashlib.sha256(resume_path.read_bytes()).hexdigest()
-    return f"{digest}:{model}"
+    return f"{resume_content_hash(resume_path)}:{model}"
 
 
 def extract_resume_profile(

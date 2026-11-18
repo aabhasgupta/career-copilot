@@ -5,8 +5,10 @@ from unittest.mock import patch
 from copilot.config import Profile
 from copilot.db import get_engine, get_session, init_db
 from copilot.db.models import Company, Job
-from copilot.resume import ContactInfo, ResumeProfile, WorkExperience
-from copilot.scoring.rubric import BatchScores, JobScore, JobToScore, _job_block, _resume_block, score_and_apply
+from copilot.resume import ContactInfo, ResumeProfile, WorkExperience, resume_content_hash
+from copilot.scoring.rubric import (
+    BatchScores, JobScore, JobToScore, _job_block, is_score_stale, resume_block, score_and_apply,
+)
 
 RESUME = ResumeProfile(
     full_name="Jane Doe",
@@ -30,7 +32,7 @@ RESUME = ResumeProfile(
 
 
 def test_resume_block_includes_key_facts():
-    block = _resume_block(RESUME)
+    block = resume_block(RESUME)
     assert "Jane Doe" in block
     assert "senior" in block
     assert "PyTorch" in block
@@ -187,3 +189,98 @@ def test_score_and_apply_empty_list_is_a_noop():
     result = score_and_apply(None, make_profile(), RESUME, [])
     assert result.scored == 0
     assert result.missing == 0
+
+
+def test_score_and_apply_stamps_resume_hash(tmp_path: Path):
+    """D47: every score needs a record of which resume version produced it,
+    so staleness can be detected later with zero LLM cost."""
+    engine = get_engine(tmp_path / "test.db")
+    init_db(engine)
+    with get_session(engine) as session:
+        acme = Company(name="Acme")
+        session.add(acme)
+        session.flush()
+        job = Job(
+            company_id=acme.id, title="ML Engineer", source="greenhouse",
+            apply_url="https://acme.com/1", dedupe_hash="h1",
+        )
+        session.add(job)
+        session.commit()
+        profile = make_profile()
+
+        with patch("copilot.llm.Anthropic") as mock_client:
+            mock_client.return_value.messages.parse.return_value = _score_response([
+                JobScore(
+                    job_id=job.id, skill_match_score=80, experience_level_score=70,
+                    domain_fit_score=60, location_fit_score=90, visa_feasibility_score=50,
+                    fit_score=75, reasoning="Strong match.", visa_signal="unknown",
+                    response_likelihood_score=65, response_likelihood_reasoning="Fresh.",
+                )
+            ])
+            score_and_apply(session, profile, RESUME, [job])
+
+        assert job.scored_resume_hash == resume_content_hash(profile.resume_path)
+
+
+def test_is_score_stale_treats_null_hash_as_stale():
+    """A job scored before this tracking existed has no recorded hash at
+    all - never claimed fresh without positive confirmation (D47)."""
+    job = Job(fit_score=75.0, scored_resume_hash=None)
+    assert is_score_stale(job, "some-hash")
+
+
+def test_is_score_stale_false_when_hash_matches():
+    job = Job(fit_score=75.0, scored_resume_hash="abc")
+    assert not is_score_stale(job, "abc")
+
+
+def test_is_score_stale_true_when_hash_differs():
+    job = Job(fit_score=75.0, scored_resume_hash="abc")
+    assert is_score_stale(job, "xyz")
+
+
+def test_is_score_stale_false_when_never_scored():
+    job = Job(fit_score=None, scored_resume_hash=None)
+    assert not is_score_stale(job, "abc")
+
+
+def test_stale_score_filter_matches_null_hash_at_sql_level(tmp_path: Path):
+    """Real bug caught while building this: SQL's != is NULL (not TRUE) for
+    a NULL column, so a plain `Job.scored_resume_hash != current_hash`
+    silently excludes every job scored before this column existed - exactly
+    the jobs the feature most needs to flag. stale_score_filter must name
+    the NULL case explicitly, and this has to be checked against a real
+    query, not just the Python-level is_score_stale helper."""
+    from sqlalchemy import select
+
+    from copilot.scoring.rubric import stale_score_filter
+
+    engine = get_engine(tmp_path / "test.db")
+    init_db(engine)
+    with get_session(engine) as session:
+        acme = Company(name="Acme")
+        session.add(acme)
+        session.flush()
+        never_hashed = Job(
+            company_id=acme.id, title="A", source="greenhouse",
+            apply_url="https://acme.com/1", dedupe_hash="h1",
+            fit_score=70.0, scored_resume_hash=None,
+        )
+        fresh = Job(
+            company_id=acme.id, title="B", source="greenhouse",
+            apply_url="https://acme.com/2", dedupe_hash="h2",
+            fit_score=80.0, scored_resume_hash="current",
+        )
+        stale = Job(
+            company_id=acme.id, title="C", source="greenhouse",
+            apply_url="https://acme.com/3", dedupe_hash="h3",
+            fit_score=60.0, scored_resume_hash="old",
+        )
+        session.add_all([never_hashed, fresh, stale])
+        session.commit()
+
+        matched = session.scalars(
+            select(Job.title).where(stale_score_filter("current"))
+        ).all()
+
+    assert set(matched) == {"A", "C"}

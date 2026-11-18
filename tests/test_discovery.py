@@ -358,3 +358,250 @@ def test_quota_exhaustion_reported_once_and_source_skipped(tmp_path, monkeypatch
     assert calls["jsearch"] == 1
     assert summary.errors == []
     assert summary.added == 2
+
+
+def test_upsert_job_merges_adzuna_location_split_siblings(tmp_path):
+    """Real bug, caught live: Adzuna splits one multi-location posting
+    (Capital One "Sr. Manager, AI Engineer") into several results, each
+    tagged with a different hyper-local neighborhood name instead of a real
+    city - without this, each one became its own Job row."""
+    from copilot.db import get_engine, get_session, init_db
+    from copilot.discovery.pipeline import _get_or_create_company, _upsert_job
+
+    jd_text = "x" * 150  # same real JD text both times - the actual signal
+    engine = get_engine(tmp_path / "t.db")
+    init_db(engine)
+    with get_session(engine) as session:
+        first = DiscoveredJob(
+            title="Sr. Manager, AI Engineer", company_name="Capital One",
+            location="Pimmit, Fairfax County", source="adzuna",
+            apply_url="https://adzuna.com/1", jd_text=jd_text,
+        )
+        second = DiscoveredJob(
+            title="Sr. Manager, AI Engineer", company_name="Capital One",
+            location="Prince, Manhattan", source="adzuna",
+            apply_url="https://adzuna.com/2", jd_text=jd_text,
+        )
+        company = _get_or_create_company(session, first)
+        assert _upsert_job(session, first, company) is True
+        assert _upsert_job(session, second, company) is False  # merged, not a new row
+        session.commit()
+
+        from sqlalchemy import select
+
+        from copilot.db.models import Job
+        rows = session.scalars(select(Job).where(Job.company_id == company.id)).all()
+
+    assert len(rows) == 1
+    assert rows[0].location == "Pimmit, Fairfax County | Prince, Manhattan"
+
+
+def test_upsert_job_does_not_merge_different_postings_with_short_jd(tmp_path):
+    """The merge is gated on substantial JD-text equality specifically to
+    avoid merging two genuinely different, short/empty-JD postings that
+    happen to share a title."""
+    from copilot.db import get_engine, get_session, init_db
+    from copilot.discovery.pipeline import _get_or_create_company, _upsert_job
+
+    engine = get_engine(tmp_path / "t.db")
+    init_db(engine)
+    with get_session(engine) as session:
+        first = DiscoveredJob(
+            title="Data Scientist", company_name="Acme", location="Austin, TX",
+            source="adzuna", apply_url="https://adzuna.com/1", jd_text="short",
+        )
+        second = DiscoveredJob(
+            title="Data Scientist", company_name="Acme", location="Denver, CO",
+            source="adzuna", apply_url="https://adzuna.com/2", jd_text="short",
+        )
+        company = _get_or_create_company(session, first)
+        assert _upsert_job(session, first, company) is True
+        assert _upsert_job(session, second, company) is True  # distinct, not merged
+
+        from sqlalchemy import select
+
+        from copilot.db.models import Job
+        rows = session.scalars(select(Job).where(Job.company_id == company.id)).all()
+
+    assert len(rows) == 2
+
+
+def test_detect_ats_workday_from_myworkdayjobs_url():
+    ats_type, slug = detect_ats(
+        "https://ntrs.wd1.myworkdayjobs.com/northerntrust/job/Chicago-IL/Foo_R123"
+    )
+    assert ats_type == ATSType.workday
+    assert slug == "ntrs:northerntrust"
+
+
+def _mock_client(handler):
+    import httpx
+
+    return httpx.Client(transport=httpx.MockTransport(handler))
+
+
+def test_probe_smartrecruiters_rejects_empty_result():
+    from copilot.discovery.ats_resolver import _probe_smartrecruiters
+
+    import httpx
+
+    def handler(request):
+        return httpx.Response(200, json={"totalFound": 0, "content": []})
+
+    with _mock_client(handler) as client:
+        assert not _probe_smartrecruiters("nosuchcompany", "No Such Company", client)
+
+
+def test_probe_smartrecruiters_rejects_name_collision():
+    """SmartRecruiters returns 200 for any slug - a real posting existing
+    under that slug is not enough, the echoed company name must actually
+    match (same lesson as the Greenhouse "capital" collision, D3)."""
+    from copilot.discovery.ats_resolver import _probe_smartrecruiters
+
+    import httpx
+
+    def handler(request):
+        return httpx.Response(
+            200,
+            json={
+                "totalFound": 1,
+                "content": [{"name": "Some Role", "company": {"name": "Unrelated Co"}}],
+            },
+        )
+
+    with _mock_client(handler) as client:
+        assert not _probe_smartrecruiters("geico", "GEICO", client)
+
+
+def test_probe_smartrecruiters_accepts_matching_company():
+    from copilot.discovery.ats_resolver import _probe_smartrecruiters
+
+    import httpx
+
+    def handler(request):
+        return httpx.Response(
+            200,
+            json={
+                "totalFound": 1,
+                "content": [{"name": "Licensed Insurance Agent", "company": {"name": "GEICO"}}],
+            },
+        )
+
+    with _mock_client(handler) as client:
+        assert _probe_smartrecruiters("geico", "GEICO", client)
+
+
+def test_resolve_company_ats_finds_smartrecruiters_match():
+    from copilot.discovery.ats_resolver import resolve_company_ats
+
+    import httpx
+
+    def handler(request):
+        if "greenhouse" in str(request.url) or "lever" in str(request.url):
+            return httpx.Response(404)
+        if "ashbyhq" in str(request.url):
+            return httpx.Response(404)
+        if "smartrecruiters" in str(request.url):
+            return httpx.Response(
+                200,
+                json={
+                    "totalFound": 1,
+                    "content": [{"name": "Role", "company": {"name": "GEICO"}}],
+                },
+            )
+        return httpx.Response(404)
+
+    with _mock_client(handler) as client:
+        result = resolve_company_ats("GEICO", client)
+    assert result == (ATSType.smartrecruiters, "geico")
+
+
+def test_fetch_smartrecruiters_skips_postings_outside_title_filter():
+    """Full-detail fetches cost a second call each - with a title_filter,
+    only postings that could match should trigger that second call."""
+    from copilot.discovery.ats_boards import fetch_board_postings
+
+    import httpx
+
+    detail_calls = []
+
+    def handler(request):
+        url = str(request.url)
+        if request.url.path.endswith("/postings"):
+            return httpx.Response(
+                200,
+                json={
+                    "totalFound": 2,
+                    "content": [
+                        {"id": "1", "name": "Machine Learning Engineer"},
+                        {"id": "2", "name": "Licensed Insurance Agent"},
+                    ],
+                },
+            )
+        detail_calls.append(url)
+        return httpx.Response(
+            200,
+            json={
+                "location": {"fullLocation": "Chicago, IL"},
+                "postingUrl": "https://jobs.smartrecruiters.com/acme/1",
+                "jobAd": {"sections": {"jobDescription": {"text": "Build models."}}},
+                "releasedDate": "2026-07-01T00:00:00.000Z",
+            },
+        )
+
+    with _mock_client(handler) as client:
+        postings = fetch_board_postings(
+            ATSType.smartrecruiters, "acme", client, ["Machine Learning Engineer"]
+        )
+
+    assert len(postings) == 1
+    assert postings[0].title == "Machine Learning Engineer"
+    assert postings[0].jd_text == "Build models."
+    assert len(detail_calls) == 1  # the non-matching posting never got a detail call
+
+
+def test_fetch_workday_parses_posting_detail():
+    from copilot.discovery.ats_boards import fetch_board_postings
+
+    import httpx
+
+    def handler(request):
+        if request.method == "POST":
+            return httpx.Response(
+                200,
+                json={
+                    "total": 1,
+                    "jobPostings": [
+                        {
+                            "title": "Machine Learning Engineer",
+                            "externalPath": "/job/Chicago-IL/MLE_R1",
+                            "locationsText": "Chicago, IL",
+                        }
+                    ],
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "jobPostingInfo": {
+                    "title": "Machine Learning Engineer",
+                    "location": "Chicago, IL",
+                    "remoteType": "Remote",
+                    "externalUrl": "https://acme.wd1.myworkdayjobs.com/acme/job/MLE_R1",
+                    "jobDescription": "<p>Build models.</p>",
+                    "startDate": "2026-07-01",
+                }
+            },
+        )
+
+    with _mock_client(handler) as client:
+        postings = fetch_board_postings(
+            ATSType.workday, "acme:acme", client, ["Machine Learning Engineer"]
+        )
+
+    assert len(postings) == 1
+    posting = postings[0]
+    assert posting.apply_url == "https://acme.wd1.myworkdayjobs.com/acme/job/MLE_R1"
+    assert posting.jd_text == "Build models."
+    assert posting.remote is True
+    assert posting.posted_at is not None

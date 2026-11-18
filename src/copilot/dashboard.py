@@ -139,7 +139,14 @@ def _visa_cell(job: Job) -> Markup:
     if job.visa_signal.value == "explicit_yes":
         return Markup('<span class="visa yes">Sponsors (JD)</span>')
     if job.company and job.company.sponsorship_status.value == "sponsors":
-        return Markup(f'<span class="visa evidence">H1B: {job.company.h1b_filing_count}</span>')
+        evidence = job.company.sponsorship_evidence or (
+            "Company-wide H1B filing history per USCIS H-1B Employer Data Hub - "
+            "a dated, whole-company aggregate, not a statement about this role"
+        )
+        return Markup(
+            f'<span class="visa evidence" title="{html.escape(evidence)}">'
+            f"H1B: {job.company.h1b_filing_count}</span>"
+        )
     return Markup('<span class="visa none">-</span>')
 
 
@@ -891,10 +898,19 @@ def create_app(
                 show_more_url = "/jobs?" + _jobs_query_string(f, limit=limit + 50)
 
             from copilot.api_usage import get_jsearch_quota
+            from copilot.resume import resume_content_hash
+            from copilot.scoring.rubric import is_score_stale, stale_score_filter
 
             unscored_total = session.scalar(
                 select(func.count(Job.id)).where(Job.fit_score.is_(None))
             )
+            current_resume_hash = resume_content_hash(profile.resume_path)
+            stale_total = session.scalar(
+                select(func.count(Job.id)).where(
+                    Job.fit_score.is_not(None), stale_score_filter(current_resume_hash)
+                )
+            )
+            stale_job_ids = {j.id for j in ranked if is_score_stale(j, current_resume_hash)}
             last_searched = session.scalar(select(func.max(Job.created_at)))
             last_searched_display = last_searched.strftime("%Y-%m-%d") if last_searched else "never"
 
@@ -919,6 +935,8 @@ def create_app(
                 total=total,
                 scored=scored,
                 unscored_total=unscored_total,
+                stale_total=stale_total,
+                stale_job_ids=stale_job_ids,
                 min_fit=min_fit,
                 location=location,
                 max_age=max_age_value,
@@ -1036,6 +1054,46 @@ def create_app(
         msg = f"Scored {result.scored} job{'s' if result.scored != 1 else ''}."
         if result.missing:
             msg += f" {result.missing} got no score back - try Score again to retry."
+        return HTMLResponse(jobs_list(flash=f'<div class="flash ok">{html.escape(msg)}</div>'))
+
+    @app.post("/jobs/rescore-stale")
+    def jobs_rescore_stale(count: int = Form(25)):
+        """Refresh jobs whose fit score was computed against a resume that's
+        since been replaced - a separate, explicit action from Score by
+        design (same reasoning as jobs_score_batch): rescoring spends real
+        Claude tokens, so it never happens just because the resume file
+        changed (docs/DECISIONS.md D47)."""
+        if not _profile_ready():
+            return RedirectResponse("/", status_code=303)
+        from copilot.resume import extract_resume_profile, resume_content_hash
+        from copilot.scoring.rubric import score_and_apply, stale_score_filter
+
+        count = max(1, min(count, 200))
+        with open(profile_path) as f:
+            profile = Profile.model_validate(pyyaml.safe_load(f))
+        engine = get_engine(db_path)
+        with get_session(engine) as session:
+            current_hash = resume_content_hash(profile.resume_path)
+            stmt = (
+                select(Job)
+                .where(Job.fit_score.is_not(None), stale_score_filter(current_hash))
+                .order_by(Job.created_at.desc())
+                .limit(count)
+            )
+            jobs = session.scalars(stmt).all()
+            if not jobs:
+                msg = '<div class="flash err">Nothing to rescore - no job\'s fit score predates your current resume.</div>'
+                return HTMLResponse(jobs_list(flash=msg))
+            try:
+                resume = extract_resume_profile(profile)
+                result = score_and_apply(session, profile, resume, jobs)
+            except Exception as exc:  # noqa: BLE001 - shown on the page
+                return HTMLResponse(
+                    jobs_list(flash=f'<div class="flash err">Rescoring failed: {html.escape(str(exc))}</div>')
+                )
+        msg = f"Rescored {result.scored} job{'s' if result.scored != 1 else ''} against your current resume."
+        if result.missing:
+            msg += f" {result.missing} got no score back - try again to retry."
         return HTMLResponse(jobs_list(flash=f'<div class="flash ok">{html.escape(msg)}</div>'))
 
     @app.post("/jobs/{job_id}/score")
@@ -1246,8 +1304,37 @@ def create_app(
             session.commit()
         return RedirectResponse(f"/applications/{application_id}", status_code=303)
 
+    @app.post("/applications/{application_id}/prep")
+    def application_prep(application_id: int):
+        """Generate (or regenerate) an interview prep brief - a real Claude +
+        web search call, same explicit-action pattern as every other paid
+        button in this dashboard."""
+        from copilot.prep import prep_application
+        from copilot.resume import extract_resume_profile
+
+        with open(profile_path) as f:
+            profile = Profile.model_validate(pyyaml.safe_load(f))
+        with get_session(get_engine(db_path)) as session:
+            application = session.get(Application, application_id)
+            if application is None:
+                return HTMLResponse(f"No application with id {application_id}.", status_code=404)
+            try:
+                resume = extract_resume_profile(profile)
+                prep_application(session, profile, resume, application)
+            except Exception as exc:  # noqa: BLE001 - shown on the page
+                return HTMLResponse(f"Prep brief failed: {html.escape(str(exc))}", status_code=500)
+        return RedirectResponse(f"/applications/{application_id}", status_code=303)
+
     @app.get("/jobs/{job_id}", response_class=HTMLResponse)
     def job_detail(job_id: int):
+        is_stale = False
+        current_resume_hash = None
+        if _profile_ready():
+            from copilot.resume import resume_content_hash
+
+            with open(profile_path) as f:
+                _profile = Profile.model_validate(pyyaml.safe_load(f))
+            current_resume_hash = resume_content_hash(_profile.resume_path)
         with get_session(get_engine(db_path)) as session:
             job = session.scalar(select(Job).where(Job.id == job_id))
             if job is None:
@@ -1261,6 +1348,10 @@ def create_app(
                     ),
                     status_code=404,
                 )
+            if job.fit_score is not None and current_resume_hash is not None:
+                from copilot.scoring.rubric import is_score_stale
+
+                is_stale = is_score_stale(job, current_resume_hash)
             application = session.scalar(select(Application).where(Application.job_id == job_id))
             dimensions = [
                 ("Skill match", job.skill_match_score),
@@ -1288,6 +1379,7 @@ def create_app(
                 dimensions=dimensions,
                 sponsorship=sponsorship,
                 jd_text=_clean_jd(job.jd_text),
+                is_stale=is_stale,
             )
         return HTMLResponse(body)
 

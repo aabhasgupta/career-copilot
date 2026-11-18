@@ -59,6 +59,14 @@
 {% else %}
 <article>
   <h3>Fit: {{ "%.0f"|format(job.fit_score) }}/100</h3>
+  {% if is_stale %}
+  <p class="sub"><span class="stale-badge">stale</span> Scored under a previous version of your resume.
+  <form method="post" action="/jobs/{{ job.id }}/score" class="inline">
+    <button type="submit" class="mini ghost"
+      title="Re-scores this job against your current resume - a real Claude API call.">Rescore</button>
+  </form>
+  </p>
+  {% endif %}
   <p>{{ job.fit_reasoning or "" }}</p>
   <table class="dims">
     {% for name, value in dimensions %}

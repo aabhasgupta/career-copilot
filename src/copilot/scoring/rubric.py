@@ -32,7 +32,7 @@ from copilot import llm
 from copilot.config import Profile
 from copilot.db.models import Job, VisaSignal
 from copilot.formatting import posting_age_days
-from copilot.resume import ResumeProfile
+from copilot.resume import ResumeProfile, resume_content_hash
 
 _JD_TEXT_LIMIT = 6000  # characters; keeps batched prompts a sane size
 
@@ -155,7 +155,7 @@ JOBS TO SCORE:
 Return one score per job_id listed above."""
 
 
-def _resume_block(resume: ResumeProfile) -> str:
+def resume_block(resume: ResumeProfile) -> str:
     experience = "\n".join(
         f"  - {w.title} at {w.company} ({w.start or '?'} to {w.end or 'present'}): "
         + "; ".join(w.highlights)
@@ -195,7 +195,7 @@ def score_jobs(
     if not jobs:
         return results
 
-    resume_block = _resume_block(resume)
+    resume_text = resume_block(resume)
 
     for i in range(0, len(jobs), batch_size):
         batch = jobs[i : i + batch_size]
@@ -207,7 +207,7 @@ def score_jobs(
                 {
                     "role": "user",
                     "content": PROMPT_TEMPLATE.format(
-                        resume_block=resume_block, jobs_block=jobs_block
+                        resume_block=resume_text, jobs_block=jobs_block
                     ),
                 }
             ],
@@ -234,6 +234,7 @@ def score_and_apply(
     the two (same reasoning as ranking.py's single rank_jobs())."""
     if not jobs:
         return ScoreRunResult(scored=0, missing=0)
+    resume_hash = resume_content_hash(profile.resume_path)
     to_score = [
         JobToScore(
             id=j.id, title=j.title, company=j.company.name if j.company else "?",
@@ -257,5 +258,25 @@ def score_and_apply(
         job.visa_feasibility_score = result.visa_feasibility_score
         job.response_likelihood_score = result.response_likelihood_score
         job.response_likelihood_reasoning = result.response_likelihood_reasoning
+        job.scored_resume_hash = resume_hash
     session.commit()
     return ScoreRunResult(scored=len(scores), missing=len(jobs) - len(scores))
+
+
+def is_score_stale(job: Job, current_resume_hash: str) -> bool:
+    """True if this job has a fit score but it wasn't confirmed scored
+    against the resume as it exists right now - either scored under a
+    resume that's since been replaced, or scored before this tracking
+    existed (scored_resume_hash is null). Never claims a score is fresh
+    without positive confirmation (docs/DECISIONS.md D47)."""
+    return job.fit_score is not None and job.scored_resume_hash != current_resume_hash
+
+
+def stale_score_filter(current_resume_hash: str):
+    """SQL-level equivalent of is_score_stale's "not confirmed fresh" half,
+    for querying without loading every Job into Python first. SQL's `!=` is
+    NULL (not TRUE) when the column itself is NULL, so a plain inequality
+    would silently exclude every job scored before scored_resume_hash
+    existed - exactly the jobs this feature most needs to catch - unless
+    the NULL case is named explicitly."""
+    return Job.scored_resume_hash.is_(None) | (Job.scored_resume_hash != current_resume_hash)

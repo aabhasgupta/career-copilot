@@ -79,6 +79,22 @@ h1, h2, h3 { line-height: 1.2; }
   font-weight: 700; padding: .05rem .5rem; min-width: 1.4rem; text-align: center;
 }
 
+/* A fit score computed before the resume on file was last replaced - not
+   wrong, just unconfirmed against what's there now (docs/DECISIONS.md D47). */
+.stale-badge {
+  display: inline-block; margin-left: .35rem; font-size: .68rem; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .03em; color: #8a5a00;
+  background: #fff3cd; border: 1px solid #f2d78b; border-radius: 6px;
+  padding: .05rem .35rem; vertical-align: middle;
+}
+@media (prefers-color-scheme: dark) {
+  .stale-badge { color: #ffd77a; background: #4a3a10; border-color: #6b5420; }
+}
+.action-note.stale-note { color: #8a5a00; }
+@media (prefers-color-scheme: dark) {
+  .action-note.stale-note { color: #ffd77a; }
+}
+
 /* ---- Page headers ---- */
 .page-head { margin-bottom: 1.4rem; }
 .page-head h1 { margin: 0 0 .2rem; font-size: 1.5rem; letter-spacing: -.01em; }

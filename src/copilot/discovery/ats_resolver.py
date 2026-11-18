@@ -95,13 +95,33 @@ def _probe_ashby(slug: str, client: httpx.Client) -> bool:
     return resp.status_code == 200 and resp.json().get("jobs") is not None
 
 
+def _probe_smartrecruiters(slug: str, company_name: str, client: httpx.Client) -> bool:
+    """SmartRecruiters returns HTTP 200 with an empty result for *any* slug
+    (no 404 on a miss), so status code alone is no signal - totalFound must be
+    positive. Each posting also echoes the real company name, so a slug
+    collision (two unrelated companies normalizing to the same name) can be
+    rejected the same way Greenhouse's board-name check works."""
+    resp = client.get(
+        f"https://api.smartrecruiters.com/v1/companies/{slug}/postings", params={"limit": 1}
+    )
+    if resp.status_code != 200:
+        return False
+    data = resp.json()
+    if not data.get("content"):
+        return False
+    posted_name = (data["content"][0].get("company") or {}).get("name", "")
+    return _names_match(company_name, posted_name)
+
+
 def resolve_company_ats(
     name: str, client: httpx.Client
 ) -> tuple[ATSType, str] | None:
     """Return (ats_type, slug) if the company has a public board on one of the
-    three ATSes, else None.
+    ATSes probed here, else None. Workday is deliberately not probed here -
+    its tenant slugs aren't derivable from a company name, so it's only ever
+    learned from a real apply_url (see discovery/ats.py, D45).
 
-    Full-name slugs are tried against all three ATSes. First-word fallback
+    Full-name slugs are tried against all probed ATSes. First-word fallback
     slugs are tried against Greenhouse only, because Greenhouse echoes the
     board's display name back so a wrong-company collision can be rejected -
     Lever and Ashby return no company name, and trusting a loose slug there
@@ -114,6 +134,8 @@ def resolve_company_ats(
             return ATSType.lever, slug
         if _probe_ashby(slug, client):
             return ATSType.ashby, slug
+        if _probe_smartrecruiters(slug, name, client):
+            return ATSType.smartrecruiters, slug
     for slug in loose_slug_candidates(name):
         if _probe_greenhouse(slug, name, client):
             return ATSType.greenhouse, slug

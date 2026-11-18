@@ -31,6 +31,21 @@
     </button>
   </form>
   <span class="action-note">{{ unscored_total }} job{{ 's' if unscored_total != 1 }} total need scoring</span>
+
+  {% if stale_total %}
+  <form method="post" action="/jobs/rescore-stale" class="inline score-form">
+    <select name="count" aria-label="Number of stale jobs to rescore">
+      {% for n in [10, 20, 30, 40, 50, 60, 70, 80, 90, 100] %}
+      <option value="{{ n }}"{{ ' selected' if n == 20 }}>{{ n }}</option>
+      {% endfor %}
+    </select>
+    <button type="submit" class="mini ghost"
+      title="Re-scores jobs whose fit score predates your current resume - a real Claude call, same cost as Score.">
+      Rescore stale
+    </button>
+  </form>
+  <span class="action-note stale-note">{{ stale_total }} job{{ 's' if stale_total != 1 }} scored under a previous resume</span>
+  {% endif %}
 </article>
 
 <form method="get" action="/jobs" class="filterbar">
@@ -100,6 +115,9 @@
             </form>
             {% else %}
             {{ fit_badge(job.fit_score) }}
+            {% if job.id in stale_job_ids %}
+            <span class="stale-badge" title="Scored under a previous version of your resume - use Rescore stale to refresh it.">stale</span>
+            {% endif %}
             {% endif %}
           </td>
           <td class="role-cell">

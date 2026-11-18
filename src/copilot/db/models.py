@@ -28,6 +28,12 @@ class ATSType(str, enum.Enum):
     greenhouse = "greenhouse"
     lever = "lever"
     ashby = "ashby"
+    smartrecruiters = "smartrecruiters"
+    # Workday is never name-guessed (tenant slugs aren't derivable from a
+    # company name) - it's learned from an apply_url actually seen in a
+    # discovered posting (docs/DECISIONS.md D45). ats_slug is stored as
+    # "{tenant}:{site}", e.g. "ntrs:northerntrust".
+    workday = "workday"
     # none = probed, no public board found; unknown = not yet probed
     none = "none"
     unknown = "unknown"
@@ -152,6 +158,13 @@ class Job(Base):
     # column and a separate sort, not blended into fit_score or rank_jobs.
     response_likelihood_score: Mapped[float | None] = mapped_column(Float)
     response_likelihood_reasoning: Mapped[str | None] = mapped_column(Text)
+    # Content hash of the resume file this job was scored against (docs/
+    # DECISIONS.md D47) - lets the system tell a stale score apart from a
+    # current one with zero LLM cost, instead of silently showing an old
+    # fit_score as if it reflects the resume on file right now. Null means
+    # "never scored" or "scored before this column existed" - either way,
+    # not confirmed fresh.
+    scored_resume_hash: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     company: Mapped[Company] = relationship(back_populates="jobs")
@@ -168,6 +181,11 @@ class Application(Base):
     )
     applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     notes: Mapped[str | None] = mapped_column(Text)
+    # Phase 6 (docs/DECISIONS.md D44): the latest generated interview-prep
+    # brief, not a history - regenerating overwrites, same one-shot-artifact
+    # pattern as packet_base.md, just per-application instead of global.
+    prep_brief: Mapped[str | None] = mapped_column(Text)
+    prep_generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow

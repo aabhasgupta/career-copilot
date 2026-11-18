@@ -22,7 +22,13 @@ from copilot.discovery.dedupe import dedupe_hash
 from copilot.discovery.jsearch import search_jsearch
 from copilot.discovery.models import DiscoveredJob
 
-_REAL_ATS_TYPES = (ATSType.greenhouse, ATSType.lever, ATSType.ashby)
+_REAL_ATS_TYPES = (
+    ATSType.greenhouse,
+    ATSType.lever,
+    ATSType.ashby,
+    ATSType.smartrecruiters,
+    ATSType.workday,
+)
 
 
 @dataclass
@@ -89,6 +95,38 @@ def _get_or_create_company(session: Session, discovered: DiscoveredJob) -> Compa
     return company
 
 
+def _merge_location(existing_location: str | None, new_location: str | None) -> str | None:
+    if not new_location:
+        return existing_location
+    if not existing_location:
+        return new_location
+    parts = existing_location.split(" | ")
+    return existing_location if new_location in parts else f"{existing_location} | {new_location}"
+
+
+def _find_location_split_sibling(
+    session: Session, discovered: DiscoveredJob, company: Company
+) -> Job | None:
+    """A posting discovered under a different location string but the exact
+    same JD text is the same real multi-location posting, split by the
+    source into one row per location - seen live: Adzuna splits a single
+    Capital One requisition into separate results tagged "Pimmit, Fairfax
+    County", "Prince, Manhattan" etc. (Adzuna's location field is a
+    hyper-local neighborhood name, not the city), one per advertised
+    location (docs/DECISIONS.md D46). Exact JD-text equality is deliberately
+    strict - two genuinely different postings sharing it would be an
+    astonishing coincidence."""
+    if not discovered.jd_text or len(discovered.jd_text) < 100:
+        return None
+    return session.scalar(
+        select(Job).where(
+            Job.company_id == company.id,
+            Job.title == discovered.title,
+            Job.jd_text == discovered.jd_text,
+        )
+    )
+
+
 def _upsert_job(session: Session, discovered: DiscoveredJob, company: Company) -> bool:
     """Returns True if a new job row was inserted, False if it was a duplicate."""
     h = dedupe_hash(discovered.company_name, discovered.title, discovered.location)
@@ -106,6 +144,21 @@ def _upsert_job(session: Session, discovered: DiscoveredJob, company: Company) -
             existing.salary_source = discovered.salary_source
         if existing.posted_at is None and discovered.posted_at is not None:
             existing.posted_at = discovered.posted_at
+        return False
+
+    sibling = _find_location_split_sibling(session, discovered, company)
+    if sibling is not None:
+        sibling.location = _merge_location(sibling.location, discovered.location)
+        if sibling.latitude is None and discovered.latitude is not None:
+            sibling.latitude = discovered.latitude
+            sibling.longitude = discovered.longitude
+        if sibling.salary_min is None and discovered.salary_min is not None:
+            sibling.salary_min = discovered.salary_min
+            sibling.salary_max = discovered.salary_max
+            sibling.salary_currency = discovered.salary_currency
+            sibling.salary_source = discovered.salary_source
+        if sibling.posted_at is None and discovered.posted_at is not None:
+            sibling.posted_at = discovered.posted_at
         return False
 
     session.add(
@@ -439,8 +492,20 @@ def resolve_and_poll_ats(profile: Profile, session: Session) -> ATSSummary:
             if not company.ats_slug:
                 continue
             summary.boards_polled += 1
+            # SmartRecruiters/Workday need a second network call per posting
+            # for full JD text, so their fetchers use this to skip postings
+            # that can't possibly be relevant (search titles plus whatever
+            # this company's already-tracked jobs are titled, so upgrade
+            # matching in _poll_board still works). Greenhouse/Lever/Ashby
+            # ignore it - one call already returns everything.
+            tracked_titles = session.scalars(
+                select(Job.title).where(Job.company_id == company.id)
+            ).all()
+            title_filter = list({*profile.search.titles, *tracked_titles})
             try:
-                postings = fetch_board_postings(company.ats_type, company.ats_slug, client)
+                postings = fetch_board_postings(
+                    company.ats_type, company.ats_slug, client, title_filter
+                )
             except Exception as exc:  # noqa: BLE001
                 summary.errors.append(f"board[{company.name}]: {exc}")
                 continue

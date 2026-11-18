@@ -43,6 +43,23 @@
 </article>
 
 <article>
+  <h3>Interview prep</h3>
+  <form method="post" action="/applications/{{ application.id }}/prep" class="inline">
+    <button type="submit" class="mini ghost"
+      title="Uses a real Claude API call with live web search to research the company and this role - can take a minute or two.">
+      {{ "Regenerate prep brief" if application.prep_brief else "Generate prep brief" }}
+    </button>
+  </form>
+  {% if application.prep_brief %}
+  <p class="sub">Generated {{ application.prep_generated_at.strftime("%Y-%m-%d %H:%M") if application.prep_generated_at else "" }}
+  - regenerating overwrites this, it's a snapshot, not a history.</p>
+  <div class="jd">{{ application.prep_brief }}</div>
+  {% else %}
+  <p class="sub">No brief yet.</p>
+  {% endif %}
+</article>
+
+<article>
   <h3>Timeline</h3>
   {% if not timeline %}
   <p class="sub">No history yet.</p>
@@ -69,4 +86,18 @@
   </ul>
   {% endif %}
 </article>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  // Prep briefs are a real, slow (can be a minute or two) Claude + web
+  // search call - same double-submit risk found live on the Jobs page
+  // (docs/DECISIONS.md D41), same fix.
+  document.querySelectorAll('article form[action$="/prep"]').forEach(function (form) {
+    form.addEventListener("submit", function () {
+      var btn = form.querySelector("button[type=submit]");
+      if (btn && !btn.disabled) { btn.disabled = true; btn.textContent = "Generating…"; }
+    });
+  });
+</script>
 {% endblock %}

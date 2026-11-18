@@ -15,6 +15,13 @@ _PATTERNS: list[tuple[ATSType, re.Pattern[str]]] = [
     (ATSType.ashby, re.compile(r"jobs\.ashbyhq\.com/([^/?#]+)")),
 ]
 
+# Workday tenant slugs aren't derivable from a company name (unlike the three
+# above, where the slug is normally just the name) - the only reliable signal
+# is an apply_url we've actually seen on a real discovered posting, e.g.
+# "https://ntrs.wd1.myworkdayjobs.com/northerntrust/job/...". Captured as
+# "tenant:site" (docs/DECISIONS.md D45).
+_WORKDAY_PATTERN = re.compile(r"https?://([\w-]+)\.wd\d+\.myworkdayjobs\.com/([\w-]+)/")
+
 
 def detect_ats(apply_url: str) -> tuple[ATSType, str | None]:
     """Return (ats_type, slug) for a known ATS apply URL, else (unknown, None)."""
@@ -22,4 +29,7 @@ def detect_ats(apply_url: str) -> tuple[ATSType, str | None]:
         match = pattern.search(apply_url)
         if match:
             return ats_type, match.group(1)
+    match = _WORKDAY_PATTERN.search(apply_url)
+    if match:
+        return ATSType.workday, f"{match.group(1)}:{match.group(2)}"
     return ATSType.unknown, None

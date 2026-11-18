@@ -301,13 +301,19 @@ def discover(
 
 @app.command()
 def score(
-    limit: int = typer.Option(25, "--limit", help="Max unscored jobs to score this run."),
+    limit: int = typer.Option(25, "--limit", help="Max jobs to score this run."),
     batch_size: int = typer.Option(8, "--batch-size", help="Jobs per Claude call."),
+    rescore_stale: bool = typer.Option(
+        False, "--rescore-stale",
+        help="Also rescore jobs whose fit score was computed against a resume "
+        "that's since been replaced, instead of only never-scored jobs.",
+    ),
 ) -> None:
     """Score unscored jobs (fit_score is null) against your resume: a 0-100 fit
     score with written reasoning, plus each JD's explicit visa/sponsorship signal.
     Costs one batched Claude call per --batch-size jobs. Safe to re-run - already
-    -scored jobs are skipped, so this only ever scores what's new."""
+    -scored jobs are skipped by default, so this only ever scores what's new.
+    Pass --rescore-stale to also refresh jobs scored under an older resume."""
     profile_path = Path(PROFILE_FILENAME)
     if not profile_path.exists():
         console.print(f"[red]{PROFILE_FILENAME} not found.[/] Run 'copilot init' first.")
@@ -319,30 +325,48 @@ def score(
 
     from copilot.db import get_engine, get_session
     from copilot.db.models import Job
-    from copilot.resume import extract_resume_profile
-    from copilot.scoring.rubric import score_and_apply
+    from copilot.resume import extract_resume_profile, resume_content_hash
+    from copilot.scoring.rubric import score_and_apply, stale_score_filter
 
     with console.status("Reading resume..."):
         resume = extract_resume_profile(profile)
+    current_hash = resume_content_hash(profile.resume_path)
+    is_stale_sql = stale_score_filter(current_hash)
 
     engine = get_engine()
     with get_session(engine) as session:
-        stmt = (
-            select(Job)
-            .where(Job.fit_score.is_(None))
-            .order_by(Job.created_at.desc())
-            .limit(limit)
-        )
+        condition = Job.fit_score.is_(None)
+        if rescore_stale:
+            condition = condition | (Job.fit_score.is_not(None) & is_stale_sql)
+        stmt = select(Job).where(condition).order_by(Job.created_at.desc()).limit(limit)
         jobs = session.scalars(stmt).all()
+
+        from sqlalchemy import func
+
+        stale_total = session.scalar(
+            select(func.count()).select_from(Job).where(Job.fit_score.is_not(None), is_stale_sql)
+        )
 
         if not jobs:
             console.print(
                 "[yellow]Nothing to score.[/] All discovered jobs already have a fit score."
             )
+            if stale_total and not rescore_stale:
+                console.print(
+                    f"[yellow]{stale_total} job(s)[/] are scored under a resume version "
+                    "that's since changed - re-run with --rescore-stale to refresh them."
+                )
             return
 
         with console.status(f"Scoring {len(jobs)} jobs against your resume..."):
             result = score_and_apply(session, profile, resume, jobs, batch_size=batch_size)
+
+        # Re-queried rather than derived from stale_total/result.scored: this
+        # run's scored jobs could have been a mix of never-scored and stale
+        # ones, so subtracting counts would be an approximation, not a fact.
+        remaining_stale = session.scalar(
+            select(func.count()).select_from(Job).where(Job.fit_score.is_not(None), is_stale_sql)
+        )
 
     console.print(f"[green]Scored {result.scored}[/] jobs.")
     if result.missing:
@@ -350,7 +374,49 @@ def score(
             f"[yellow]{result.missing} jobs got no score back[/] - left unscored, "
             "re-run 'copilot score' to retry them."
         )
+    if remaining_stale:
+        console.print(
+            f"[dim]{remaining_stale} job(s) are still scored under a previous resume - "
+            "re-run with --rescore-stale to refresh them.[/]"
+        )
     console.print("[dim]Run 'copilot jobs list' to see them ranked by fit.[/]")
+
+
+@app.command()
+def prep(application_id: int) -> None:
+    """Generate an interview prep brief for a tracked application: company/role
+    research (live web search), your gap areas from its fit reasoning, and likely
+    question areas. One real Claude + web search call. Regenerating overwrites the
+    previous brief - this is a snapshot, not a history."""
+    from rich.markdown import Markdown
+    from sqlalchemy import select
+
+    from copilot.db import get_engine, get_session
+    from copilot.db.models import Application
+    from copilot.prep import prep_application
+    from copilot.resume import extract_resume_profile
+
+    profile_path = Path(PROFILE_FILENAME)
+    if not profile_path.exists():
+        console.print(f"[red]{PROFILE_FILENAME} not found.[/] Run 'copilot init' first.")
+        raise typer.Exit(1)
+
+    profile = load_profile()
+
+    with console.status("Reading resume..."):
+        resume = extract_resume_profile(profile)
+
+    engine = get_engine()
+    with get_session(engine) as session:
+        application = session.scalar(select(Application).where(Application.id == application_id))
+        if application is None:
+            console.print(f"[red]No application with id {application_id}.[/]")
+            raise typer.Exit(1)
+
+        with console.status("Researching company and generating prep brief (live web search)..."):
+            brief = prep_application(session, profile, resume, application)
+
+    console.print(Panel(Markdown(brief), title=f"Prep brief - application #{application_id}"))
 
 
 @app.command("sponsorship-sync")
@@ -960,6 +1026,10 @@ def jobs_show(job_id: int) -> None:
     from copilot.db import get_engine, get_session
     from copilot.db.models import Application, Job
     from copilot.formatting import format_posted, format_salary
+    from copilot.resume import resume_content_hash
+    from copilot.scoring.rubric import is_score_stale
+
+    profile = load_profile()
 
     with get_session(get_engine()) as session:
         job = session.scalar(select(Job).where(Job.id == job_id))
@@ -988,6 +1058,11 @@ def jobs_show(job_id: int) -> None:
             return
 
         console.print(f"\n[bold]Fit score: {job.fit_score:.0f}/100[/]")
+        if is_score_stale(job, resume_content_hash(profile.resume_path)):
+            console.print(
+                "[yellow]Scored under a previous version of your resume[/] - "
+                "run 'copilot score --rescore-stale' to refresh it."
+            )
         console.print(job.fit_reasoning or "[dim](no reasoning stored)[/]")
 
         table = Table(title="Dimension breakdown", show_header=True)

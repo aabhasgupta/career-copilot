@@ -33,6 +33,7 @@ Every third-party service this project talks to, what it's for, how it's authent
 - **Endpoint in use:** `GET /v1/api/jobs/{country}/search/{page}` (`country="us"`). Params: `app_id`, `app_key`, `what` (title), `where` (location - omitted for countrywide searches like "United States" so the search isn't scoped to a literal place called that), `results_per_page`, `content-type=application/json`.
 - **Response shape:** `{count, results: [...]}`. Each result's `salary_is_predicted` ("1"/"0") tells you whether `salary_min`/`salary_max` are Adzuna's own estimate or the posting's stated figure - mapped to `salary_source` (`aggregator_estimate` vs `posted`).
 - **Known limitation (confirmed live, 2026-07-19):** `redirect_url` (the apply link) always proxies through `adzuna.com/land/ad/...` or `adzuna.com/details/...` - never the employer's own posting or ATS URL. This means Adzuna results give zero signal for ATS auto-detection (see "ATS auto-watchlist" note below). `description` is also a truncated snippet, not the full JD.
+- **`location.display_name` is a hyper-local neighborhood name, not a city** (confirmed live 2026-11-18): Adzuna's `location.area` hierarchy is `[country, state, county, neighborhood]`, and `display_name` is literally `f"{area[-1]}, {area[-2]}"` - the single most granular level it has, paired with the county. For many real postings this reads fine ("Boston, Suffolk County"), but for others it's an obscure, unrecognizable place ("Pimmit, Fairfax County" for a McLean, VA posting) that doesn't match what the posting itself advertises. A real-geocoding fix was investigated and abandoned - Nominatim genuinely has no "city" for many of these (they're unincorporated census-designated places), so there's no reliable string-level correction. A worse side effect this caused: a single real multi-location posting gets returned by Adzuna as multiple separate results, one per location, each tagged with a different hyper-local name - `discovery/pipeline.py`'s `_upsert_job` now detects this (exact company+title+JD-text match) and merges them into one job with a combined `"City A | City B"` location instead of creating near-duplicate rows (docs/DECISIONS.md D46).
 - **Status:** integrated, Phase 1 discovery.
 
 ### Greenhouse / Lever / Ashby job-board APIs
@@ -43,6 +44,30 @@ Every third-party service this project talks to, what it's for, how it's authent
   - Lever: `GET api.lever.co/v0/postings/{slug}?mode=json` (postings with `text` = title, `hostedUrl`, `categories.location`, `createdAt` in epoch ms, `descriptionPlain`).
   - Ashby: `GET api.ashbyhq.com/posting-api/job-board/{slug}` (postings with `title`, `jobUrl`, `location`, `isRemote`, `isListed`, `publishedAt`, `descriptionPlain`).
 - **Slug-collision caveat:** only Greenhouse returns the company name, so only Greenhouse hits can be verified. Loose slug guesses (first word of a multi-word company name) are therefore Greenhouse-only; Lever/Ashby accept full-name slugs only. This is load-bearing: loose Lever probing matched Capital One to an unrelated board named "capital" in live testing.
+
+### SmartRecruiters job-board API
+- **Used for:** same purpose as Greenhouse/Lever/Ashby - resolving discovered companies to a direct ATS board (`discovery/ats_resolver.py`) and polling it for direct apply links + full JD text (`discovery/ats_boards.py`)
+- **Auth:** none - public and unauthenticated
+- **Endpoints in use:**
+  - `GET api.smartrecruiters.com/v1/companies/{slug}/postings?limit&offset` - list endpoint. **Returns HTTP 200 with an empty result for any slug, even nonsense ones** (confirmed live 2026-11-18) - `totalFound > 0` is the real signal, not status code. Does not include full JD text.
+  - `GET api.smartrecruiters.com/v1/companies/{slug}/postings/{id}` - per-posting detail (full `jobAd.sections`, `location`, `postingUrl`, `releasedDate`). One call per posting, so `ats_boards.py` only calls this for postings that already passed a title pre-filter (`title_filter`), not every posting on the board.
+- **Verification:** each posting in the list response echoes `company.name` - checked against the probed company name (`_names_match`, same discipline as Greenhouse's board-name check) before trusting a slug match, since status 200 alone proves nothing (D45).
+- **Status:** integrated 2026-11-18 (D45). Real companies confirmed live: AbbVie (2,043 open postings), ServiceNow (837).
+
+### Workday CXS endpoint (unofficial)
+- **Used for:** polling a company's Workday-hosted job board once its tenant has been *observed* in a real apply_url (never name-guessed - Workday tenant slugs aren't derivable from a company name, e.g. Northern Trust's tenant is `ntrs`)
+- **Auth:** none required, but **requires a browser-shaped `User-Agent` header** - a Cloudflare WAF in front of the endpoint returns 429 without one (confirmed live 2026-11-18). Still unauthenticated and read-only; it's the same JSON the public careers page itself fetches, not a login-walled or scraped HTML page.
+- **Not an officially documented public API** (unlike Greenhouse/Lever/Ashby/SmartRecruiters) - it's the endpoint the company's own public careers page calls under the hood. Stability and per-tenant bot protection are not guaranteed the way the other four are.
+- **Endpoints in use** (tenant/site extracted from an observed URL like `https://{tenant}.wd1.myworkdayjobs.com/{site}/job/...`, stored as `"{tenant}:{site}"`):
+  - `POST {tenant}.wd1.myworkdayjobs.com/wday/cxs/{tenant}/{site}/jobs` - list (title, relative `postedOn` text, `externalPath`) - body `{"appliedFacets": {}, "limit", "offset", "searchText": ""}`
+  - `GET {tenant}.wd1.myworkdayjobs.com/wday/cxs/{tenant}/{site}{externalPath}` - full detail (`jobPostingInfo.jobDescription`, `.startDate` as a real ISO date, `.externalUrl`, `.remoteType`)
+- **Detection:** `discovery/ats.py`'s `detect_ats()` (already run against every JSearch/Adzuna apply_url for Greenhouse/Lever/Ashby) gained a `*.myworkdayjobs.com` pattern - this is the original D3 apply-URL-sniffing mechanism, which has no signal via Adzuna/JSearch for Greenhouse/Lever/Ashby (they proxy) but does work for Workday, since Workday's own direct URL is what JSearch happened to return.
+- **Verified live (2026-11-18):** real Northern Trust tenant (`ntrs:northerntrust`) - 663 total open postings, full JD text, real ISO posting dates.
+- **Status:** integrated 2026-11-18 (D45).
+
+### Workable - investigated, not integrated
+- **Looked at for:** same purpose as the above, via `apply.workable.com/api/v1/widget/accounts/{slug}`
+- **Why not added:** 22 of 379 unresolved companies matched by name (public, unauthenticated, no key needed), but checking actual job counts - not just the name match - showed 21 of 22, including every well-known company tested (Walmart, Cognizant, Capgemini, Mastercard, Fiserv, Palo Alto Networks, University of Chicago), return zero live postings. They read as abandoned/placeholder accounts. One real false positive was also caught this way: the "Vanguard" account is an unrelated photography/hunting-gear manufacturer, not the asset manager - same company name, different real-world entity, which exact-name-matching alone did not catch. See D45.
 
 ### Remotive
 - **Used for:** remote-first tech job board, supplements the aggregators for the user's top preference (remote)
